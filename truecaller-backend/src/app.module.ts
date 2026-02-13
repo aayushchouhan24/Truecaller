@@ -23,6 +23,7 @@ import { SearchHistoryModule } from './modules/search-history/search-history.mod
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { JobsModule } from './jobs/jobs.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
+import { HealthController } from './health.controller';
 
 @Module({
   imports: [
@@ -49,10 +50,7 @@ import { FirebaseModule } from './modules/firebase/firebase.module';
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        connection: {
-          host: config.get<string>('redis.host', 'localhost'),
-          port: config.get<number>('redis.port', 6379),
-        },
+        connection: config.get('redis') as any,
       }),
     }),
 
@@ -73,12 +71,11 @@ import { FirebaseModule } from './modules/firebase/firebase.module';
     SearchHistoryModule,
     FavoritesModule,
     JobsModule,
-  ],
-  providers: [
+  ], controllers: [HealthController], providers: [
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
   ],
 })
-export class AppModule {}
+export class AppModule { }

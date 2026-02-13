@@ -30,4 +30,8 @@ ENV NODE_ENV=production
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main"]
+# Start the application directly
+# NOTE: Database migrations should be run separately before deployment
+# For new deployments, run: npx prisma migrate deploy
+# This prevents migration failures on every container restart
+CMD ["node", "dist/src/main"]

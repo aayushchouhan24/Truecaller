@@ -24,8 +24,10 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // Global prefix
-  app.setGlobalPrefix('api');
+  // Global prefix (exclude health check from prefix)
+  app.setGlobalPrefix('api', {
+    exclude: ['health'],
+  });
 
   // Global pipes
   app.useGlobalPipes(
