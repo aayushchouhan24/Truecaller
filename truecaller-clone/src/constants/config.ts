@@ -1,4 +1,4 @@
-export const API_BASE_URL = 'http://localhost:3000/api';
+export const API_BASE_URL = 'https://vq52dn7g-3000.inc1.devtunnels.ms/api';
 
 export const SPAM_THRESHOLD = 5;
 

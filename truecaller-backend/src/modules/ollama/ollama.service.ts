@@ -85,12 +85,20 @@ export class OllamaService implements OnModuleInit {
 
   private async pullModel(): Promise<void> {
     try {
-      const res = await this.fetchOllama('/api/pull', {
-        method: 'POST',
-        body: JSON.stringify({ name: this.model, stream: false }),
-      });
-      if (!res.ok) throw new Error(`Pull failed: ${res.status}`);
-      this.logger.log(`Model "${this.model}" pulled successfully`);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10 * 60 * 1000); // 10 min for pull
+      try {
+        const res = await fetch(`${this.baseUrl}/api/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: this.model, stream: false }),
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`Pull failed: ${res.status}`);
+        this.logger.log(`Model "${this.model}" pulled successfully`);
+      } finally {
+        clearTimeout(timer);
+      }
     } catch (err) {
       this.logger.error(`Failed to pull model "${this.model}": ${err.message}`);
     }

@@ -5,3 +5,4 @@ dist/
 *.d.ts
 firebase-service-account
 firebase-service-account.json
+docker-compose.override.yml
