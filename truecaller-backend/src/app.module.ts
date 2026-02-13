@@ -20,6 +20,7 @@ import { ContactsModule } from './modules/contacts/contacts.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { JobsModule } from './jobs/jobs.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
+import { HealthController } from './health.controller';
 
 @Module({
   imports: [
@@ -85,6 +86,7 @@ import { FirebaseModule } from './modules/firebase/firebase.module';
     FavoritesModule,
     JobsModule,
   ],
+  controllers: [HealthController],
   providers: [
     {
       provide: APP_GUARD,
