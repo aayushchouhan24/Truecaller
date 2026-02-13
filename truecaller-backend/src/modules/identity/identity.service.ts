@@ -30,6 +30,16 @@ const CLUSTER_THRESHOLD = 0.55;
 // Minimum new contributions before re-resolving
 const RECALC_THRESHOLD = 3;
 
+// ── AI Scoring Weights ─────────────────────────────────────────────
+const SCORE_WEIGHTS = {
+  frequency: 0.20,       // How many people contributed this name
+  trustWeight: 0.25,     // Sum of contributor trust scores
+  nameCompleteness: 0.15, // Full names score higher than single tokens
+  sourceDiversity: 0.15,  // Multiple source types (contact, manual, verified) = better
+  recency: 0.10,         // Recent contributions score higher
+  consistency: 0.15,     // How consistent names are within the cluster
+};
+
 @Injectable()
 export class IdentityService {
   private readonly logger = new Logger(IdentityService.name);
@@ -147,6 +157,170 @@ export class IdentityService {
     return contribution;
   }
 
+  // ── BULK: Add Name Contributions in Batch ───────────────────────────
+
+  async addNameContributionsBatch(
+    contacts: { phoneNumber: string; name: string }[],
+    contributorId: string,
+    sourceType: SourceType = SourceType.CONTACT_UPLOAD,
+    deviceFingerprint?: string,
+  ): Promise<{ created: number; skipped: number; junk: number }> {
+    if (contacts.length === 0) return { created: 0, skipped: 0, junk: 0 };
+
+    const startTime = Date.now();
+
+    // ── Step 1: Normalize phones & clean names (CPU only, instant) ──
+    const cleaned: { phone: string; rawName: string; cleanedName: string }[] = [];
+    let junk = 0;
+
+    for (const c of contacts) {
+      const phone = this.normalizePhone(c.phoneNumber);
+      const { cleanedName, isJunk } = cleanName(c.name);
+      if (isJunk || !cleanedName) {
+        junk++;
+        continue;
+      }
+      cleaned.push({ phone, rawName: c.name, cleanedName });
+    }
+
+    if (cleaned.length === 0) {
+      this.logger.log(`Batch: all ${junk} names were junk, nothing to contribute`);
+      return { created: 0, skipped: 0, junk };
+    }
+
+    // ── Step 2: Get unique phone numbers & fetch existing identities ──
+    const uniquePhones = [...new Set(cleaned.map((c) => c.phone))];
+
+    const existingIdentities = await this.prisma.numberIdentity.findMany({
+      where: { phoneNumber: { in: uniquePhones } },
+      select: { id: true, phoneNumber: true },
+    });
+
+    const identityMap = new Map(existingIdentities.map((i) => [i.phoneNumber, i.id]));
+
+    // ── Step 3: Create missing identities in bulk ──
+    const missingPhones = uniquePhones.filter((p) => !identityMap.has(p));
+
+    if (missingPhones.length > 0) {
+      await this.prisma.numberIdentity.createMany({
+        data: missingPhones.map((p) => ({ phoneNumber: p })),
+        skipDuplicates: true,
+      });
+
+      // Fetch newly created to get their IDs
+      const newIdentities = await this.prisma.numberIdentity.findMany({
+        where: { phoneNumber: { in: missingPhones } },
+        select: { id: true, phoneNumber: true },
+      });
+      for (const ni of newIdentities) {
+        identityMap.set(ni.phoneNumber, ni.id);
+      }
+    }
+
+    // ── Step 4: Get contributor trust weight ONCE ──
+    let contributorTrustWeight = 1.0;
+
+    if (contributorId) {
+      const contributor = await this.prisma.user.findUnique({
+        where: { id: contributorId },
+      });
+
+      if (contributor) {
+        if (contributor.verificationLevel === 'OTP_VERIFIED') contributorTrustWeight += 0.3;
+        if (contributor.verificationLevel === 'ID_VERIFIED') contributorTrustWeight += 0.6;
+        const ageMonths = (Date.now() - contributor.createdAt.getTime()) / (30 * 24 * 60 * 60 * 1000);
+        contributorTrustWeight += Math.min(ageMonths * 0.05, 0.5);
+        contributorTrustWeight *= contributor.trustScore;
+        if (contributor.isSuspicious) contributorTrustWeight *= 0.1;
+      }
+    }
+
+    // ── Step 5: Find all existing contributions for dedup (single query) ──
+    const identityIds = [...new Set([...identityMap.values()])];
+
+    const existingContribs = await this.prisma.nameContribution.findMany({
+      where: {
+        identityId: { in: identityIds },
+        contributorId,
+      },
+      select: { identityId: true, cleanedName: true },
+    });
+
+    // Build a fast dedup set: "identityId::cleanedName"
+    const dedupSet = new Set(existingContribs.map((c) => `${c.identityId}::${c.cleanedName}`));
+
+    // ── Step 6: Filter out duplicates, build create payload ──
+    const toCreate: {
+      identityId: string;
+      contributorId: string | null;
+      rawName: string;
+      cleanedName: string;
+      sourceType: SourceType;
+      contributorTrustWeight: number;
+      deviceFingerprint: string | null;
+    }[] = [];
+
+    const identityIdsToIncrement = new Map<string, number>();
+
+    for (const c of cleaned) {
+      const identityId = identityMap.get(c.phone);
+      if (!identityId) continue;
+
+      const dedupKey = `${identityId}::${c.cleanedName}`;
+      if (dedupSet.has(dedupKey)) continue;
+      dedupSet.add(dedupKey); // prevent intra-batch duplicates
+
+      toCreate.push({
+        identityId,
+        contributorId: contributorId || null,
+        rawName: c.rawName,
+        cleanedName: c.cleanedName,
+        sourceType,
+        contributorTrustWeight,
+        deviceFingerprint: deviceFingerprint || null,
+      });
+
+      identityIdsToIncrement.set(identityId, (identityIdsToIncrement.get(identityId) || 0) + 1);
+    }
+
+    const skipped = cleaned.length - toCreate.length;
+
+    // ── Step 7: Bulk create contributions ──
+    if (toCreate.length > 0) {
+      const BULK_SIZE = 500;
+      for (let i = 0; i < toCreate.length; i += BULK_SIZE) {
+        const chunk = toCreate.slice(i, i + BULK_SIZE);
+        await this.prisma.nameContribution.createMany({
+          data: chunk,
+          skipDuplicates: true,
+        });
+      }
+
+      // ── Step 8: Batch update source counts using raw query ──
+      const updates = [...identityIdsToIncrement.entries()];
+      const UPDT_SIZE = 200;
+      for (let i = 0; i < updates.length; i += UPDT_SIZE) {
+        const batch = updates.slice(i, i + UPDT_SIZE);
+        await this.prisma.$transaction(
+          batch.map(([id, count]) =>
+            this.prisma.numberIdentity.update({
+              where: { id },
+              data: { sourceCount: { increment: count } },
+            }),
+          ),
+        );
+      }
+    }
+
+    const elapsed = Date.now() - startTime;
+    this.logger.log(
+      `Batch contributions: ${toCreate.length} created, ${skipped} duplicates skipped, ${junk} junk, ` +
+      `${uniquePhones.length} identities — ${elapsed}ms`,
+    );
+
+    return { created: toCreate.length, skipped, junk };
+  }
+
   // ── STEP 6: Set Verified Name (self-declared by OTP-verified user) ──
 
   async setVerifiedName(phoneNumber: string, name: string, verificationLevel: 'OTP_VERIFIED' | 'ID_VERIFIED' = 'OTP_VERIFIED') {
@@ -162,7 +336,7 @@ export class IdentityService {
     });
   }
 
-  // ── STEP 5 & 7: Cluster Names & Resolve Best Name ──────────────────
+  // ── STEP 5 & 7: Cluster Names & Resolve Best Name (AI Scoring) ──────
 
   async resolveIdentity(phoneNumber: string): Promise<IdentityResult> {
     const normalized = this.normalizePhone(phoneNumber);
@@ -238,15 +412,12 @@ export class IdentityService {
     // ── STEP 5: Cluster similar names ──
     const clusters = this.clusterNames(identity.contributions);
 
-    // ── STEP 7: Select winning cluster ──
-    let winningCluster: NameClusterData | null = null;
-    for (const cluster of clusters) {
-      if (!winningCluster || cluster.totalWeight > winningCluster.totalWeight) {
-        winningCluster = cluster;
-      }
-    }
+    // ── STEP 7: AI Score each cluster ──
+    const scoredClusters = this.scoreClustersByAI(clusters, identity.contributions);
+    scoredClusters.sort((a, b) => b.aiScore - a.aiScore);
 
-    if (!winningCluster) {
+    const winner = scoredClusters[0];
+    if (!winner) {
       return {
         phoneNumber: normalized,
         name: null,
@@ -256,15 +427,19 @@ export class IdentityService {
       };
     }
 
-    // ── STEP 8: Select best name inside cluster ──
-    const bestName = this.selectBestNameInCluster(winningCluster);
+    // ── STEP 8: Select best name inside winning cluster ──
+    const bestName = this.selectBestNameInCluster(winner);
 
-    // ── STEP 9: Confidence calculation ──
-    const totalAllWeights = clusters.reduce((sum, c) => sum + c.totalWeight, 0);
-    const confidence =
-      totalAllWeights > 0
-        ? Math.round((winningCluster.totalWeight / totalAllWeights) * 100)
-        : 0;
+    // ── STEP 9: Confidence = weighted AI score (0-100) ──
+    const totalAIScore = scoredClusters.reduce((s, c) => s + c.aiScore, 0);
+    const confidence = totalAIScore > 0
+      ? Math.round((winner.aiScore / totalAIScore) * 100)
+      : 0;
+
+    this.logger.log(
+      `AI resolved "${bestName}" for ${normalized} (confidence=${confidence}, ` +
+      `clusters=${scoredClusters.length}, contributions=${identity.contributions.length})`,
+    );
 
     // Update the resolved name in DB
     await this.prisma.numberIdentity.update({
@@ -291,7 +466,7 @@ export class IdentityService {
   // ── Clustering Logic ────────────────────────────────────────────────
 
   private clusterNames(
-    contributions: { cleanedName: string; contributorTrustWeight: number }[],
+    contributions: { cleanedName: string; contributorTrustWeight: number; sourceType?: string; createdAt?: Date }[],
   ): NameClusterData[] {
     const clusters: NameClusterData[] = [];
 
@@ -333,20 +508,104 @@ export class IdentityService {
   }
 
   private selectBestNameInCluster(cluster: NameClusterData): string {
-    // Prefer names with more tokens (full name > first name only)
-    // Among those, pick the most frequent variant
+    // AI-powered selection: prefer the most "complete" and frequent variant
     let bestName = cluster.representativeName;
-    let bestTokenCount = bestName.split(/\s+/).length;
+    let bestScore = 0;
 
     for (const variant of cluster.variants) {
-      const tokenCount = variant.split(/\s+/).length;
-      if (tokenCount > bestTokenCount) {
+      const tokens = variant.split(/\s+/);
+      let score = 0;
+
+      // More tokens = more complete name
+      score += tokens.length * 2;
+
+      // Longer names are generally better (but not too long)
+      const len = variant.length;
+      score += Math.min(len / 5, 4);
+
+      // Penalize names that look like abbreviations
+      const hasShortTokens = tokens.some((t) => t.length <= 1);
+      if (hasShortTokens) score -= 1;
+
+      // Prefer proper capitalizable names (all-caps or all-lower gets small penalty)
+      const isProperCase = tokens.every((t) => /^[A-Z][a-z]/.test(t));
+      if (isProperCase) score += 1;
+
+      if (score > bestScore) {
+        bestScore = score;
         bestName = variant;
-        bestTokenCount = tokenCount;
       }
     }
 
     return capitalizeName(bestName);
+  }
+
+  // ── AI Scoring Engine ──────────────────────────────────────────────
+
+  /**
+   * Scores each cluster using multiple weighted signals to determine
+   * the most likely real name for a phone number.
+   */
+  private scoreClustersByAI(
+    clusters: NameClusterData[],
+    contributions: { cleanedName: string; contributorTrustWeight: number; sourceType: string; createdAt: Date }[],
+  ): (NameClusterData & { aiScore: number })[] {
+    const now = Date.now();
+    const maxContributions = Math.max(...clusters.map((c) => c.frequency), 1);
+    const maxWeight = Math.max(...clusters.map((c) => c.totalWeight), 1);
+
+    return clusters.map((cluster) => {
+
+      // 1. FREQUENCY SCORE — how many people contributed names in this cluster
+      const frequencyScore = cluster.frequency / maxContributions;
+
+      // 2. TRUST WEIGHT SCORE — aggregate trust from contributors
+      const trustScore = cluster.totalWeight / maxWeight;
+
+      // 3. NAME COMPLETENESS — full names score higher
+      const repTokens = cluster.representativeName.split(/\s+/).length;
+      const completenessScore = Math.min(repTokens / 3, 1); // 3+ tokens = full score
+
+      // 4. SOURCE DIVERSITY — names from multiple source types are more reliable
+      const clusterContribs = contributions.filter((c) =>
+        cluster.variants.some((v) => nameSimilarity(c.cleanedName, v) >= CLUSTER_THRESHOLD),
+      );
+      const sourceTypes = new Set(clusterContribs.map((c) => c.sourceType));
+      const diversityScore = Math.min(sourceTypes.size / 3, 1); // 3+ types = full score
+
+      // 5. RECENCY SCORE — newer contributions are more relevant
+      const clusterDates = clusterContribs.map((c) => new Date(c.createdAt).getTime());
+      const avgAge = clusterDates.length > 0
+        ? clusterDates.reduce((s, d) => s + (now - d), 0) / clusterDates.length
+        : Infinity;
+      const daysSinceAvg = avgAge / (24 * 60 * 60 * 1000);
+      const recencyScore = Math.max(0, 1 - daysSinceAvg / 365); // decays over a year
+
+      // 6. CONSISTENCY SCORE — how similar are the variants within the cluster
+      let consistencyScore = 1;
+      if (cluster.variants.length > 1) {
+        let totalSim = 0;
+        let pairs = 0;
+        for (let i = 0; i < cluster.variants.length; i++) {
+          for (let j = i + 1; j < cluster.variants.length; j++) {
+            totalSim += nameSimilarity(cluster.variants[i], cluster.variants[j]);
+            pairs++;
+          }
+        }
+        consistencyScore = pairs > 0 ? totalSim / pairs : 1;
+      }
+
+      // Weighted combination
+      const aiScore =
+        SCORE_WEIGHTS.frequency * frequencyScore +
+        SCORE_WEIGHTS.trustWeight * trustScore +
+        SCORE_WEIGHTS.nameCompleteness * completenessScore +
+        SCORE_WEIGHTS.sourceDiversity * diversityScore +
+        SCORE_WEIGHTS.recency * recencyScore +
+        SCORE_WEIGHTS.consistency * consistencyScore;
+
+      return { ...cluster, aiScore };
+    });
   }
 
   private async persistClusters(identityId: string, clusters: NameClusterData[]) {

@@ -125,6 +125,16 @@ class CallerIdOverlayService : Service() {
         lookupDone = false
         dismissAfterCallOverlay()
         showIncomingOverlay(number)
+
+        // Step 1: Check device contacts first (instant, no network)
+        val contactName = lookupContactName(number)
+        if (!contactName.isNullOrEmpty()) {
+            lookupName = contactName
+            lookupDone = true
+            handler.post { updateIncomingOverlay(contactName, false, 0) }
+        }
+
+        // Step 2: Also check backend (may have spam info or better name)
         lookupNumber(normalizePhoneForLookup(number))
     }
 
@@ -275,7 +285,7 @@ class CallerIdOverlayService : Service() {
             badgeTextView?.text = "★  First time caller"
             badgeTextView?.setTextColor(Color.WHITE)
         } else {
-            badgeTextView?.text = "★  Unknown caller"
+            badgeTextView?.text = "★  Unknown Number"
         }
 
         if (!name.isNullOrEmpty()) {
@@ -284,7 +294,7 @@ class CallerIdOverlayService : Service() {
             subtitleTextView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             subtitleTextView?.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         } else {
-            subtitleTextView?.text = if (isSpam) "Reported as spam" else "Not in database"
+            subtitleTextView?.text = if (isSpam) "Reported as spam" else "Unknown Number"
             subtitleTextView?.setTextColor(Color.parseColor(BLUE_PALE))
         }
     }
@@ -304,9 +314,16 @@ class CallerIdOverlayService : Service() {
     private fun showAfterCallOverlay(phoneNumber: String, isMissed: Boolean, seconds: Int) {
         dismissAfterCallOverlay()
 
-        val name = lookupName
+        var name = lookupName
         val isSpam = lookupIsSpam
-        val displayName = if (!name.isNullOrEmpty()) name else formatPhone(phoneNumber)
+
+        // If backend returned null, check device contacts
+        if (name.isNullOrEmpty()) {
+            name = lookupContactName(phoneNumber)
+            lookupName = name
+        }
+
+        val displayName = if (!name.isNullOrEmpty()) name else "Unknown Number"
         val statusText = if (isMissed) "Missed call, rang ${seconds}s" else "Call ended  •  ${formatDuration(seconds)}"
 
         val container = LinearLayout(this).apply {
@@ -561,25 +578,38 @@ class CallerIdOverlayService : Service() {
                     val data = if (json.has("data") && json.get("data") is JSONObject)
                         json.getJSONObject("data") else json
 
-                    val name = data.optString("bestName", "").ifEmpty { null }
+                    val apiName = data.optString("name", "").ifEmpty {
+                        data.optString("bestName", "").ifEmpty { null }
+                    }
                     val spamScore = data.optInt("spamScore", 0)
                     val isSpam = data.optBoolean("isLikelySpam", false)
 
-                    lookupName = name
+                    // NEVER overwrite a good name with null — only upgrade
+                    if (!apiName.isNullOrEmpty()) {
+                        lookupName = apiName
+                    }
                     lookupIsSpam = isSpam
                     lookupSpamScore = spamScore
                     lookupDone = true
 
-                    handler.post { updateIncomingOverlay(name, isSpam, spamScore) }
+                    // Show API name if better, or keep existing name
+                    val displayName = if (!apiName.isNullOrEmpty()) apiName else lookupName
+                    handler.post { updateIncomingOverlay(displayName, isSpam, spamScore) }
                 } else {
                     lookupDone = true
-                    handler.post { updateIncomingOverlay(null, false, 0) }
+                    // Don't overwrite existing name on error
+                    if (lookupName == null) {
+                        handler.post { updateIncomingOverlay(null, false, 0) }
+                    }
                 }
                 conn.disconnect()
             } catch (e: Exception) {
                 e.printStackTrace()
                 lookupDone = true
-                handler.post { updateIncomingOverlay(null, false, 0) }
+                // Don't overwrite existing name on error
+                if (lookupName == null) {
+                    handler.post { updateIncomingOverlay(null, false, 0) }
+                }
             }
         }
     }
@@ -613,6 +643,30 @@ class CallerIdOverlayService : Service() {
     }
 
     // ── UI Helpers ──────────────────────────────────────────
+
+    /**
+     * Look up a phone number in device contacts using ContentResolver.
+     * Returns the contact display name, or null if not found.
+     */
+    private fun lookupContactName(phoneNumber: String): String? {
+        try {
+            val uri = Uri.withAppendedPath(
+                ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+                Uri.encode(phoneNumber)
+            )
+            val cursor = contentResolver.query(
+                uri,
+                arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME),
+                null, null, null
+            )
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    return it.getString(0)
+                }
+            }
+        } catch (_: Exception) {}
+        return null
+    }
 
     private fun createActionButton(icon: String, label: String, color: String, onClick: () -> Unit): LinearLayout {
         return LinearLayout(this).apply {

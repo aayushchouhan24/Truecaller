@@ -13,7 +13,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import auth, { FirebaseAuthTypes } from '@react-native-firebase/auth';
+import { getAuth, signInWithPhoneNumber, getIdToken } from '@react-native-firebase/auth';
+import type { FirebaseAuthTypes } from '@react-native-firebase/auth';
+import { getApp } from '@react-native-firebase/app';
 import { authApi } from '../src/services/api';
 import { useAuthStore } from '../src/store/authStore';
 import { COLORS } from '../src/constants/config';
@@ -38,9 +40,11 @@ export default function LoginScreen() {
   }, [countdown]);
 
   const getFullPhone = () => {
-    let trimmed = phoneNumber.trim();
-    if (!trimmed.startsWith('+')) trimmed = '+91' + trimmed;
-    return trimmed;
+    let trimmed = phoneNumber.trim().replace(/\s+/g, '');
+    // Strip leading +91 if user typed it (since UI already shows +91 prefix)
+    if (trimmed.startsWith('+91')) trimmed = trimmed.slice(3);
+    if (trimmed.startsWith('91') && trimmed.length > 10) trimmed = trimmed.slice(2);
+    return '+91' + trimmed;
   };
 
   /** Step 1 — Send OTP via Firebase */
@@ -51,10 +55,10 @@ export default function LoginScreen() {
       Alert.alert('Invalid Number', 'Enter a valid phone number');
       return;
     }
-    setPhoneNumber(phone);
     setIsLoading(true);
     try {
-      const confirmation = await auth().signInWithPhoneNumber(phone);
+      const firebaseAuth = getAuth(getApp());
+      const confirmation = await signInWithPhoneNumber(firebaseAuth, phone);
       confirmationRef.current = confirmation;
       setStep('otp');
       setCountdown(30);
@@ -85,10 +89,11 @@ export default function LoginScreen() {
     try {
       await confirmationRef.current.confirm(otp);
 
-      // Get Firebase ID token
-      const firebaseUser = auth().currentUser;
+      // Get Firebase ID token (modular API)
+      const firebaseAuth = getAuth(getApp());
+      const firebaseUser = firebaseAuth.currentUser;
       if (!firebaseUser) throw new Error('Firebase auth failed');
-      const idToken = await firebaseUser.getIdToken();
+      const idToken = await getIdToken(firebaseUser);
 
       // Send to our backend
       const response = await authApi.loginWithFirebase(idToken);
@@ -124,9 +129,10 @@ export default function LoginScreen() {
     }
     setIsLoading(true);
     try {
-      const firebaseUser = auth().currentUser;
+      const firebaseAuth = getAuth(getApp());
+      const firebaseUser = firebaseAuth.currentUser;
       if (!firebaseUser) throw new Error('Session expired');
-      const idToken = await firebaseUser.getIdToken();
+      const idToken = await getIdToken(firebaseUser);
 
       const response = await authApi.loginWithFirebase(idToken, trimmedName);
       const data = response.data;
@@ -145,7 +151,8 @@ export default function LoginScreen() {
     if (countdown > 0) return;
     setIsLoading(true);
     try {
-      const confirmation = await auth().signInWithPhoneNumber(getFullPhone(), true);
+      const firebaseAuth = getAuth(getApp());
+      const confirmation = await signInWithPhoneNumber(firebaseAuth, getFullPhone());
       confirmationRef.current = confirmation;
       setCountdown(30);
       Alert.alert('OTP Sent', 'A new code has been sent to your phone');
@@ -161,7 +168,7 @@ export default function LoginScreen() {
       try {
         const { contactsService } = await import('../src/services/contacts');
         await contactsService.syncContactsToServer();
-      } catch {}
+      } catch { }
     }, 2000);
   };
 
@@ -230,7 +237,7 @@ export default function LoginScreen() {
             <>
               <Text style={styles.inputLabel}>Enter verification code</Text>
               <Text style={styles.otpSubLabel}>
-                We sent a 6-digit code to {phoneNumber}
+                We sent a 6-digit code to {getFullPhone()}
               </Text>
 
               <View style={styles.otpInputWrap}>
@@ -280,7 +287,7 @@ export default function LoginScreen() {
           {/* ─── STEP 3: Name (new users) ──────── */}
           {step === 'name' && (
             <>
-              <Text style={styles.inputLabel}>What's your name?</Text>
+              <Text style={styles.inputLabel}>What&apos;s your name?</Text>
               <Text style={styles.nameSubLabel}>This helps others identify you on Truecaller</Text>
 
               <View style={styles.nameInputWrap}>

@@ -70,8 +70,10 @@ export class AuthService {
     try {
       decodedToken = await this.firebaseAdmin.auth().verifyIdToken(firebaseToken);
     } catch (error: any) {
-      this.logger.warn(`Firebase token verification failed: ${error.message}`);
-      throw new UnauthorizedException('Invalid or expired Firebase token');
+      this.logger.error(`Firebase token verification failed: ${error.code} — ${error.message}`);
+      throw new UnauthorizedException(
+        `Firebase verification failed: ${error.code || error.message}`,
+      );
     }
 
     const phoneNumber = decodedToken.phone_number;

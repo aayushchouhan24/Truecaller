@@ -86,7 +86,10 @@
       [
         "react-native-permissions",
         {
-          "iosPermissions": ["Contacts", "Notifications"],
+          "iosPermissions": [
+            "Contacts",
+            "Notifications"
+          ],
           "androidPermissions": [
             "READ_CONTACTS",
             "WRITE_CONTACTS",
@@ -106,6 +109,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "bb568cf0-dd01-45ec-a65f-9904dfb910dc"
+      }
     }
   }
 }

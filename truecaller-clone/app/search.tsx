@@ -7,9 +7,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { contactsApi, searchHistoryApi, numbersApi } from '../src/services/api';
+import { contactsApi, numbersApi } from '../src/services/api';
 import { contactsService } from '../src/services/contacts';
-import type { UserContact, SearchHistoryItem } from '../src/types';
+import { storageService } from '../src/services/storage';
+import type { UserContact } from '../src/types';
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -37,7 +38,7 @@ function isPhoneNumber(q: string): boolean {
 export default function SearchScreen() {
     const [query, setQuery] = useState('');
     const [contacts, setContacts] = useState<UserContact[]>([]);
-    const [searchHistory, setSearchHistory] = useState<SearchHistoryItem[]>([]);
+    const [searchHistory, setSearchHistory] = useState<{ query: string; phoneNumber?: string; resultName?: string }[]>([]);
     const [lookingUp, setLookingUp] = useState(false);
 
     // Load contacts & search history on mount
@@ -63,8 +64,13 @@ export default function SearchScreen() {
                         const contactsRes = await contactsApi.getAll();
                         setContacts(contactsRes.data);
                     }
-                    const historyRes = await searchHistoryApi.getAll();
-                    setSearchHistory(historyRes.data);
+                    // Load recent lookups from local storage
+                    const recent = await storageService.getRecentLookups();
+                    setSearchHistory(recent.map((r: any) => ({
+                        query: r.phoneNumber || r.name || '',
+                        phoneNumber: r.phoneNumber,
+                        resultName: r.name,
+                    })));
                 } catch (err: any) {
                     console.error('Failed to load search data:', err.message);
                 }
@@ -86,15 +92,14 @@ export default function SearchScreen() {
         setLookingUp(true);
         try {
             const res = await numbersApi.lookup(phoneNumber);
-            // Save to search history
-            await searchHistoryApi.create({
-                query: phoneNumber,
+            // Save to local recent lookups
+            await storageService.addRecentLookup({
                 phoneNumber,
-                resultName: res.data.bestName || undefined,
+                name: res.data.name || undefined,
             });
             router.push({
                 pathname: '/number-detail',
-                params: { phone: phoneNumber, name: res.data.bestName || '' },
+                params: { phone: phoneNumber, name: res.data.name || '' },
             });
         } catch (err: any) {
             Alert.alert('Not Found', err.message);
@@ -104,21 +109,13 @@ export default function SearchScreen() {
     };
 
     const handleContactPress = async (contact: UserContact) => {
-        // Save to search history
-        try {
-            await searchHistoryApi.create({
-                query: contact.name,
-                phoneNumber: contact.phoneNumber,
-                resultName: contact.name,
-            });
-        } catch { }
         router.push({
             pathname: '/number-detail',
             params: { phone: contact.phoneNumber, name: contact.name },
         });
     };
 
-    const handleHistoryPress = (item: SearchHistoryItem) => {
+    const handleHistoryPress = (item: { query: string; phoneNumber?: string; resultName?: string }) => {
         if (item.phoneNumber) {
             router.push({
                 pathname: '/number-detail',
@@ -130,12 +127,8 @@ export default function SearchScreen() {
     };
 
     const handleClearHistory = async () => {
-        try {
-            await searchHistoryApi.clear();
-            setSearchHistory([]);
-        } catch (err: any) {
-            Alert.alert('Error', err.message);
-        }
+        await storageService.clearRecentLookups();
+        setSearchHistory([]);
     };
 
     const showResults = query.trim().length > 0;

@@ -8,7 +8,6 @@ import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { smsService } from '../../src/services/smsReader';
-import { messagesApi } from '../../src/services/api';
 import { useAuthStore } from '../../src/store/authStore';
 
 /* ── helpers ─────────────────────────────────────────── */
@@ -106,20 +105,6 @@ export default function MessagesScreen() {
           isSpam: m.category === 'SPAM',
           source: 'device' as const,
         }));
-      } else {
-        try {
-          const res = await messagesApi.getAll();
-          items = (res.data || []).map(m => ({
-            id: m.id,
-            sender: m.sender,
-            body: m.body,
-            date: m.createdAt,
-            isRead: m.isRead,
-            category: m.category,
-            isSpam: m.isSpam,
-            source: 'api' as const,
-          }));
-        } catch {}
       }
       setMsgs(items);
     } catch (err: any) {
@@ -134,20 +119,11 @@ export default function MessagesScreen() {
   const onRefresh = () => { setRefreshing(true); fetchData(true); };
 
   const handleDelete = useCallback((item: MsgItem) => {
-    if (item.source === 'api') {
-      Alert.alert('Delete?', item.sender, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: async () => {
-          try { await messagesApi.delete(item.id); fetchData(true); } catch {}
-        }},
-      ]);
-    }
+    // Only device SMS, no API delete needed
   }, [fetchData]);
 
   const handleRead = useCallback(async (item: MsgItem) => {
-    if (item.source === 'api' && !item.isRead) {
-      try { await messagesApi.markRead(item.id); } catch {}
-    }
+    // SMS read state managed by device
   }, []);
 
   const getInitials = (n: string) => {

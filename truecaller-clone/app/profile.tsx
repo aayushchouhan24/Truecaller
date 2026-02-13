@@ -47,12 +47,24 @@ function MenuItem({ icon, iconLib, label, badge, onPress, color }: {
 export default function ProfileScreen() {
   const { user, setUser } = useAuthStore();
   const [blockedCount, setBlockedCount] = useState(0);
-  const [stats, setStats] = useState({ profileViews: 0, searchedBy: 0, spamReported: 0, searchesMade: 0 });
+  const [stats, setStats] = useState({
+    contactsSynced: 0, spamReported: 0, nameContributions: 0,
+    trustScore: 1.0, verificationLevel: 'NONE',
+    profileViews: 0, searchedBy: 0,
+  });
   const [viewers, setViewers] = useState<any[]>([]);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editName, setEditName] = useState(user?.name || '');
   const [saving, setSaving] = useState(false);
-  const completionPercent = 65;
+  // Calculate profile completion based on what the user has filled in
+  const completionPercent = (() => {
+    let pct = 30; // base for having an account
+    if (user?.name) pct += 30;
+    if (stats.contactsSynced > 0) pct += 20;
+    if (stats.verificationLevel === 'OTP_VERIFIED') pct += 10;
+    if (stats.verificationLevel === 'ID_VERIFIED') pct += 20;
+    return Math.min(pct, 100);
+  })();
 
   const handleSaveName = async () => {
     const trimmed = editName.trim();
@@ -77,11 +89,11 @@ export default function ProfileScreen() {
       setBlockedCount(await callBlockingService.getBlockedCount());
       try {
         const res = await usersApi.getStats();
-        setStats(res.data);
+        if (res.data) setStats((prev) => ({ ...prev, ...res.data }));
       } catch {}
       try {
         const res = await usersApi.getWhoViewedMe(1);
-        setViewers(res.data.data || []);
+        setViewers(res.data?.data || []);
       } catch {}
     })();
   }, []);
@@ -115,7 +127,7 @@ export default function ProfileScreen() {
               <Text style={s.percentBadgeT}>{completionPercent}%</Text>
             </View>
           </View>
-          <TouchableOpacity>
+          <TouchableOpacity onPress={() => Alert.alert('Coming Soon', 'Gender feature will be available in a future update.')}>
             <Text style={s.genderLink}>Add gender to get 10%</Text>
           </TouchableOpacity>
         </View>
@@ -126,7 +138,13 @@ export default function ProfileScreen() {
             <Ionicons name="pencil" size={16} color="#FFF" />
             <Text style={s.actionBtnFilledT}>Edit profile</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={s.actionBtnOutline}>
+          <TouchableOpacity style={s.actionBtnOutline} onPress={() => {
+            if (stats.verificationLevel === 'OTP_VERIFIED') {
+              Alert.alert('Already Verified', 'Your phone number is already OTP verified!');
+            } else {
+              Alert.alert('Get Verified', 'Your phone number was verified during sign-up via OTP.');
+            }
+          }}>
             <Ionicons name="checkmark-circle-outline" size={16} color="#2196F3" />
             <Text style={s.actionBtnOutlineT}>Get verified</Text>
           </TouchableOpacity>
@@ -165,8 +183,10 @@ export default function ProfileScreen() {
                 Alert.alert('Who Searched For Me', 'Could not load data');
               }
             }} />
-          <MenuItem icon="people-outline" iconLib="ion" label="Contact requests" />
-          <MenuItem icon="shield-checkmark-outline" iconLib="ion" label="Fraud insurance" />
+          <MenuItem icon="people-outline" iconLib="ion" label="Contact requests"
+            onPress={() => Alert.alert('Contact Requests', 'No pending contact requests.')} />
+          <MenuItem icon="shield-checkmark-outline" iconLib="ion" label="Fraud insurance"
+            onPress={() => Alert.alert('Fraud Insurance', 'Fraud insurance is available with Premium subscription.')} />
         </View>
 
         {/* ── Stats Section ─────────────────── */}
@@ -175,19 +195,19 @@ export default function ProfileScreen() {
           <View style={s.statsGrid}>
             <View style={s.statCard}>
               <Text style={s.statNum}>{stats.spamReported}</Text>
-              <Text style={s.statLabel}>Spam identified</Text>
+              <Text style={s.statLabel}>Spam reported</Text>
             </View>
             <View style={s.statCard}>
               <Text style={s.statNum}>{blockedCount}</Text>
               <Text style={s.statLabel}>Numbers blocked</Text>
             </View>
             <View style={s.statCard}>
-              <Text style={s.statNum}>{stats.searchesMade}</Text>
-              <Text style={s.statLabel}>Searches made</Text>
+              <Text style={s.statNum}>{stats.contactsSynced}</Text>
+              <Text style={s.statLabel}>Contacts synced</Text>
             </View>
             <View style={s.statCard}>
-              <Text style={s.statNum}>{stats.profileViews}</Text>
-              <Text style={s.statLabel}>Profile views</Text>
+              <Text style={s.statNum}>{stats.nameContributions}</Text>
+              <Text style={s.statLabel}>Name contributions</Text>
             </View>
           </View>
         </View>

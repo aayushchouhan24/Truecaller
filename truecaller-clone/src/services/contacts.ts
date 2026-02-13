@@ -119,15 +119,15 @@ class ContactsService {
         })),
       );
 
-      // Send in batches of 100
+      // Send in batches of 500 (backend handles batch DB operations)
       let synced = 0;
-      for (let i = 0; i < formatted.length; i += 100) {
-        const batch = formatted.slice(i, i + 100);
+      for (let i = 0; i < formatted.length; i += 500) {
+        const batch = formatted.slice(i, i + 500);
         try {
           await api.post('/contacts/sync', { contacts: batch });
           synced += batch.length;
         } catch (e) {
-          console.error('[Contacts] sync batch error:', e);
+          console.warn('[Contacts] sync batch skipped:', i, '-', i + batch.length);
         }
       }
 

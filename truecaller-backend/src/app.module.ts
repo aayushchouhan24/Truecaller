@@ -17,6 +17,7 @@ import { IdentityModule } from './modules/identity/identity.module';
 import { NumbersModule } from './modules/numbers/numbers.module';
 import { SpamModule } from './modules/spam/spam.module';
 import { ContactsModule } from './modules/contacts/contacts.module';
+import { FavoritesModule } from './modules/favorites/favorites.module';
 import { JobsModule } from './jobs/jobs.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
 
@@ -81,6 +82,7 @@ import { FirebaseModule } from './modules/firebase/firebase.module';
     NumbersModule,
     SpamModule,
     ContactsModule,
+    FavoritesModule,
     JobsModule,
   ],
   providers: [

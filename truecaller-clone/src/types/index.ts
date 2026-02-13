@@ -12,8 +12,10 @@ export interface AuthResponse {
 
 export interface LookupResult {
   phoneNumber: string;
-  bestName: string | null;
-  confidenceScore: number;
+  name: string | null;
+  confidence: number;
+  sourceCount: number;
+  isVerified: boolean;
   spamScore: number;
   isLikelySpam: boolean;
 }
@@ -27,8 +29,8 @@ export interface ApiResponse<T> {
 export interface AddNamePayload {
   phoneNumber: string;
   name: string;
-  sourceType?: 'USER_UPLOAD' | 'MANUAL' | 'VERIFIED';
-  weight?: number;
+  sourceType?: 'CONTACT_UPLOAD' | 'MANUAL' | 'SELF_DECLARED';
+  deviceFingerprint?: string;
 }
 
 export interface ReportSpamPayload {

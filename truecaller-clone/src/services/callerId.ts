@@ -6,6 +6,8 @@
  */
 import { Platform, PermissionsAndroid, AppState, NativeModules, Linking } from 'react-native';
 import { numbersApi } from './api';
+import { storageService } from './storage';
+import { API_BASE_URL } from '../constants/config';
 
 const { CallerIdModule } = NativeModules;
 
@@ -86,11 +88,11 @@ class CallerIdService {
       const res = await numbersApi.lookup(phoneNumber);
       const info: CallerInfo = {
         phoneNumber,
-        name: res.data.bestName,
+        name: res.data.name,
         isSpam: res.data.isLikelySpam,
         spamScore: res.data.spamScore,
-        confidence: res.data.confidenceScore,
-        source: res.data.bestName ? 'database' : 'unknown',
+        confidence: res.data.confidence,
+        source: res.data.name ? 'database' : 'unknown',
       };
 
       // Cache for this session
@@ -116,7 +118,11 @@ class CallerIdService {
 
     try {
       if (CallerIdModule?.startService) {
-        await CallerIdModule.startService();
+        // Pass API URL and stored JWT token to the native overlay service
+        const token = await storageService.getToken();
+        // Strip /api suffix since the native code appends /numbers/lookup
+        const baseUrl = API_BASE_URL; // already includes /api
+        await CallerIdModule.startService(baseUrl, token || '');
       }
       this._enabled = true;
       return true;

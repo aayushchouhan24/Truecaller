@@ -2,13 +2,15 @@ import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   StatusBar, Platform, Alert, ActivityIndicator, Linking,
+  Share, Modal, TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 // colors inlined for Truecaller-accurate styling
-import { numbersApi, usersApi } from '../src/services/api';
+import { numbersApi, favoritesApi } from '../src/services/api';
 import { storageService } from '../src/services/storage';
+import { callBlockingService } from '../src/services/callBlocking';
 
 const AVATAR_COLORS = ['#E91E63', '#9C27B0', '#673AB7', '#3F51B5', '#2196F3', '#009688', '#4CAF50', '#FF9800', '#795548', '#607D8B'];
 
@@ -39,6 +41,9 @@ export default function NumberDetailScreen() {
   const [isSpam, setIsSpam] = useState(false);
   const [carrier] = useState('');
   const [location] = useState('');
+  const [nameModalVisible, setNameModalVisible] = useState(false);
+  const [suggestedName, setSuggestedName] = useState('');
+  const [submittingName, setSubmittingName] = useState(false);
 
   useEffect(() => {
     if (phone) lookupNumber();
@@ -50,13 +55,11 @@ export default function NumberDetailScreen() {
     try {
       const res = await numbersApi.lookup(phone);
       const d = res.data;
-      if (d.bestName) setName(d.bestName);
+      if (d.name) setName(d.name);
       setSpamScore(d.spamScore);
-      setConfidence(d.confidenceScore);
+      setConfidence(d.confidence);
       setIsSpam(d.isLikelySpam);
       await storageService.addRecentLookup(d);
-      // Record profile view for this number
-      try { await usersApi.recordProfileView(phone); } catch {}
     } catch {
       // Use passed name, no API data
     } finally {
@@ -68,10 +71,50 @@ export default function NumberDetailScreen() {
   const handleWhatsApp = () => Linking.openURL(`https://wa.me/${phone.replace('+', '')}`);
   const handleSMS = () => Linking.openURL(`sms:${phone}`);
 
+  const handleSaveContact = () => {
+    // Open device "Add Contact" screen with phone number pre-filled
+    const displayName = name && name !== 'Unknown' ? name : '';
+    const uri = Platform.OS === 'android'
+      ? `content://com.android.contacts/contacts`
+      : `tel:${phone}`;
+    // Use intent to add a new contact
+    Linking.openURL(
+      `https://contacts.google.com/new?phone=${encodeURIComponent(phone)}&name=${encodeURIComponent(displayName)}`
+    ).catch(() => {
+      // Fallback: try tel: intent
+      Linking.openURL(`tel:${phone}`).catch(() => {
+        Alert.alert('Save Contact', `Add ${phone} to your contacts manually.`);
+      });
+    });
+  };
+
+  const handleShareContact = async () => {
+    try {
+      const displayName = name || 'Unknown Number';
+      await Share.share({
+        message: `${displayName}\n${phone}`,
+        title: 'Share Contact',
+      });
+    } catch {
+      // User cancelled or share failed
+    }
+  };
+
   const handleBlock = () => {
     Alert.alert('Block Number', `Block ${phone}?`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Block', style: 'destructive', onPress: () => Alert.alert('Blocked', 'Number has been blocked') },
+      {
+        text: 'Block',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await callBlockingService.blockNumber(phone, 'Blocked by user');
+            Alert.alert('Blocked', 'Number has been blocked');
+          } catch {
+            Alert.alert('Error', 'Failed to block number');
+          }
+        },
+      },
     ]);
   };
 
@@ -95,23 +138,36 @@ export default function NumberDetailScreen() {
   };
 
   const handleAddName = () => {
-    Alert.prompt?.(
-      'Suggest Name',
-      `Add a name for ${phone}`,
-      async (text: string) => {
-        if (!text?.trim()) return;
-        try {
-          await numbersApi.addName({ phoneNumber: phone, name: text.trim(), sourceType: 'MANUAL' });
-          Alert.alert('Submitted', 'Name suggestion submitted');
-          lookupNumber();
-        } catch (e: any) {
-          Alert.alert('Error', e.message);
-        }
-      },
-    );
+    setSuggestedName('');
+    setNameModalVisible(true);
   };
 
-  const displayName = name || 'Unknown';
+  const submitSuggestedName = async () => {
+    const trimmed = suggestedName.trim();
+    if (!trimmed) return;
+    setSubmittingName(true);
+    try {
+      await numbersApi.addName({ phoneNumber: phone, name: trimmed, sourceType: 'MANUAL' });
+      Alert.alert('Submitted', 'Name suggestion submitted');
+      setNameModalVisible(false);
+      lookupNumber();
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    } finally {
+      setSubmittingName(false);
+    }
+  };
+
+  const handleSaveFavorite = async () => {
+    try {
+      await favoritesApi.add(phone, name || 'Unknown');
+      Alert.alert('Saved', 'Added to favorites');
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to save');
+    }
+  };
+
+  const displayName = name || 'Unknown Number';
   const avatarColor = isSpam ? '#F44336' : getAvatarColor(name || null);
 
   return (
@@ -149,10 +205,10 @@ export default function NumberDetailScreen() {
               <Text style={st.spamBannerT}>Likely Spam</Text>
             </View>
           )}
-          <TouchableOpacity style={st.changeBtn}>
+          <TouchableOpacity style={st.changeBtn} onPress={handleAddName}>
             <Text style={st.changeBtnT}>CHANGE</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={st.viewProfileBtn}>
+          <TouchableOpacity style={st.viewProfileBtn} onPress={() => router.push({ pathname: '/search', params: { q: phone } })}>
             <Text style={st.viewProfileT}>View profile</Text>
           </TouchableOpacity>
         </View>
@@ -206,7 +262,7 @@ export default function NumberDetailScreen() {
             <Text style={st.actionLabel}>SMS</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={st.actionBtn}>
+          <TouchableOpacity style={st.actionBtn} onPress={handleSaveContact}>
             <View style={[st.actionCircle, { backgroundColor: 'rgba(33,150,243,0.15)' }]}>
               <Ionicons name="person-add" size={20} color="#2196F3" />
             </View>
@@ -235,7 +291,7 @@ export default function NumberDetailScreen() {
             <Ionicons name="chevron-forward" size={18} color="#5A5A5E" />
           </TouchableOpacity>
           <View style={st.moreSep} />
-          <TouchableOpacity style={st.moreRow}>
+          <TouchableOpacity style={st.moreRow} onPress={handleShareContact}>
             <Ionicons name="share-social" size={20} color="#8E8E93" />
             <Text style={st.moreText}>Share contact</Text>
             <Ionicons name="chevron-forward" size={18} color="#5A5A5E" />
@@ -253,6 +309,38 @@ export default function NumberDetailScreen() {
           </View>
         )}
       </ScrollView>
+
+      {/* ── Suggest Name Modal ── */}
+      <Modal visible={nameModalVisible} transparent animationType="slide">
+        <View style={st.modalOverlay}>
+          <View style={st.modalBox}>
+            <Text style={st.modalTitle}>Suggest a Name</Text>
+            <Text style={st.modalSubtitle}>Add a name for {phone}</Text>
+            <TextInput
+              style={st.modalInput}
+              value={suggestedName}
+              onChangeText={setSuggestedName}
+              placeholder="Enter name"
+              placeholderTextColor="#6B6B6B"
+              autoFocus
+              maxLength={50}
+              autoCapitalize="words"
+            />
+            <View style={st.modalBtnRow}>
+              <TouchableOpacity style={st.modalCancelBtn} onPress={() => setNameModalVisible(false)}>
+                <Text style={st.modalCancelT}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[st.modalSaveBtn, submittingName && { opacity: 0.5 }]}
+                onPress={submitSuggestedName}
+                disabled={submittingName}
+              >
+                {submittingName ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={st.modalSaveT}>Submit</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -303,4 +391,33 @@ const st = StyleSheet.create({
   confBar: { height: 6, backgroundColor: '#2C2C2E', borderRadius: 3, overflow: 'hidden', marginBottom: 6 },
   confFill: { height: '100%', borderRadius: 3 },
   confVal: { color: '#FFF', fontSize: 14, fontWeight: '600', textAlign: 'right' },
+
+  /* modal */
+  modalOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center', alignItems: 'center', padding: 24,
+  },
+  modalBox: {
+    backgroundColor: '#1C1C1E', borderRadius: 16,
+    padding: 24, width: '100%', maxWidth: 360,
+  },
+  modalTitle: { color: '#FFF', fontSize: 18, fontWeight: '700', marginBottom: 4, textAlign: 'center' },
+  modalSubtitle: { color: '#8E8E93', fontSize: 13, textAlign: 'center', marginBottom: 16 },
+  modalInput: {
+    backgroundColor: '#0A0A0A', borderRadius: 12,
+    paddingHorizontal: 16, paddingVertical: 14,
+    fontSize: 16, color: '#FFF',
+    borderWidth: 1, borderColor: '#333', marginBottom: 20,
+  },
+  modalBtnRow: { flexDirection: 'row' as const, gap: 12 },
+  modalCancelBtn: {
+    flex: 1, borderRadius: 24, borderWidth: 1.5, borderColor: '#555',
+    paddingVertical: 12, alignItems: 'center' as const,
+  },
+  modalCancelT: { color: '#999', fontSize: 15, fontWeight: '600' as const },
+  modalSaveBtn: {
+    flex: 1, borderRadius: 24, backgroundColor: '#2196F3',
+    paddingVertical: 12, alignItems: 'center' as const,
+  },
+  modalSaveT: { color: '#FFF', fontSize: 15, fontWeight: '700' as const },
 });

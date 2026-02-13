@@ -28,6 +28,7 @@ model User {
   spamReports       SpamReport[]
   contacts          UserContact[]
   nameContributions NameContribution[]
+  favorites         Favorite[]
 
   @@map("users")
 }
@@ -137,6 +138,22 @@ model UserContact {
   @@unique([userId, phoneNumber])
   @@index([phoneNumber])
   @@map("user_contacts")
+}
+
+// ── Favorites ─────────────────────────────────────────────────────────────
+
+model Favorite {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  phoneNumber String   @map("phone_number")
+  name        String
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, phoneNumber])
+  @@map("favorites")
 }
 
 // ── Rate Limiting for Anti-Manipulation ──────────────────────────────────

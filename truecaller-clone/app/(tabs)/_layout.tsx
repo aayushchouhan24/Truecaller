@@ -5,7 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { smsService } from '../../src/services/smsReader';
 import { callLogsService } from '../../src/services/callLogs';
-import { messagesApi, spamApi } from '../../src/services/api';
+import { spamApi } from '../../src/services/api';
 
 function Badge({ count }: { count: number }) {
   if (count <= 0) return null;
@@ -27,9 +27,6 @@ export default function TabLayout() {
       if (smsService.isAvailable) {
         const count = await smsService.getUnreadCount();
         setMsgBadge(count);
-      } else {
-        const res = await messagesApi.getUnreadCount();
-        setMsgBadge(res.data || 0);
       }
 
       // Spam badge

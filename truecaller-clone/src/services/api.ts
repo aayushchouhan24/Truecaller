@@ -7,11 +7,7 @@ import type {
   LookupResult,
   AddNamePayload,
   ReportSpamPayload,
-  CallHistory,
   CallType,
-  Message,
-  MessageCategory,
-  SearchHistoryItem,
   Favorite,
   UserContact,
   SpamNumber,
@@ -38,15 +34,20 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (response) => response.data,
   async (error) => {
-    // If 401, clear auth and silently reject (root layout will redirect to login)
-    if (error.response?.status === 401) {
-      await storageService.removeToken();
-      await storageService.removeUser();
-      return Promise.reject(new Error('Unauthorized'));
-    }
     const message =
       error.response?.data?.message || error.message || 'Network error';
-    return Promise.reject(new Error(Array.isArray(message) ? message[0] : message));
+    const formattedMsg = Array.isArray(message) ? message[0] : message;
+
+    // If 401 on a non-auth endpoint, clear auth (session expired)
+    if (error.response?.status === 401) {
+      const url = error.config?.url || '';
+      if (!url.includes('/auth/')) {
+        await storageService.removeToken();
+        await storageService.removeUser();
+      }
+      return Promise.reject(new Error(formattedMsg));
+    }
+    return Promise.reject(new Error(formattedMsg));
   },
 );
 
@@ -63,55 +64,10 @@ export const numbersApi = {
     api.post('/numbers/lookup', { phoneNumber }) as Promise<ApiResponse<LookupResult>>,
 
   addName: (payload: AddNamePayload) =>
-    api.post('/numbers/add-name', payload) as Promise<ApiResponse<{ message: string; signalId: string }>>,
+    api.post('/numbers/add-name', payload) as Promise<ApiResponse<{ message: string; contributionId: string }>>,
 
   reportSpam: (payload: ReportSpamPayload) =>
     api.post('/numbers/report-spam', payload) as Promise<ApiResponse<{ message: string; reportId: string }>>,
-};
-
-export const callHistoryApi = {
-  getAll: (type?: CallType) =>
-    api.get('/call-history', { params: type ? { type: type.toLowerCase() } : {} }) as Promise<ApiResponse<CallHistory[]>>,
-
-  getRecentContacts: () =>
-    api.get('/call-history/recent-contacts') as Promise<ApiResponse<CallHistory[]>>,
-
-  create: (data: { phoneNumber: string; name?: string; type: CallType; duration?: number; sim?: number }) =>
-    api.post('/call-history', data) as Promise<ApiResponse<CallHistory>>,
-
-  deleteOne: (id: string) =>
-    api.delete(`/call-history/${id}`) as Promise<ApiResponse<null>>,
-
-  deleteAll: () =>
-    api.delete('/call-history') as Promise<ApiResponse<null>>,
-};
-
-export const messagesApi = {
-  getAll: (category?: MessageCategory) =>
-    api.get('/messages', { params: category ? { category: category.toLowerCase() } : {} }) as Promise<ApiResponse<Message[]>>,
-
-  getUnreadCount: () =>
-    api.get('/messages/unread-count') as Promise<ApiResponse<number>>,
-
-  markRead: (id: string) =>
-    api.patch(`/messages/${id}/read`) as Promise<ApiResponse<Message>>,
-
-  markAllRead: () =>
-    api.patch('/messages/read-all') as Promise<ApiResponse<null>>,
-
-  delete: (id: string) =>
-    api.delete(`/messages/${id}`) as Promise<ApiResponse<null>>,
-};
-
-export const searchHistoryApi = {
-  getAll: () =>
-    api.get('/search-history') as Promise<ApiResponse<SearchHistoryItem[]>>,
-
-  create: (data: { query: string; phoneNumber?: string; resultName?: string }) =>
-    api.post('/search-history', data) as Promise<ApiResponse<SearchHistoryItem>>,
-
-  clear: () =>
-    api.delete('/search-history') as Promise<ApiResponse<null>>,
 };
 
 export const favoritesApi = {
@@ -151,17 +107,15 @@ export const usersApi = {
   updateName: (name: string) =>
     api.patch('/users/me', { name }) as Promise<ApiResponse<any>>,
 
-  recordProfileView: (phoneNumber: string) =>
-    api.post('/users/profile-view-by-phone', { phoneNumber }) as Promise<ApiResponse<any>>,
-
-  getWhoViewedMe: (page = 1) =>
-    api.get('/users/who-viewed-me', { params: { page } }) as Promise<ApiResponse<any>>,
-
-  getWhoSearchedMe: (page = 1) =>
-    api.get('/users/who-searched-me', { params: { page } }) as Promise<ApiResponse<any>>,
-
   getStats: () =>
     api.get('/users/stats') as Promise<ApiResponse<any>>,
+
+  // Placeholder methods — backend doesn't track profile views or search-by yet
+  getWhoViewedMe: (_page: number) =>
+    Promise.resolve({ data: { data: [], total: 0 } }) as Promise<any>,
+
+  getWhoSearchedMe: (_page: number) =>
+    Promise.resolve({ data: { data: [], total: 0 } }) as Promise<any>,
 };
 
 export default api;

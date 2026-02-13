@@ -9,7 +9,7 @@ import { router } from 'expo-router';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { callLogsService } from '../../src/services/callLogs';
 import { contactsService, type DeviceContact } from '../../src/services/contacts';
-import { callHistoryApi, favoritesApi, numbersApi } from '../../src/services/api';
+import { favoritesApi, numbersApi } from '../../src/services/api';
 import { callBlockingService } from '../../src/services/callBlocking';
 import { useAuthStore } from '../../src/store/authStore';
 import type { Favorite, CallType } from '../../src/types';
@@ -194,15 +194,6 @@ export default function CallsScreen() {
           isSpam: callBlockingService.isBlocked(l.phoneNumber),
           source: 'device' as const,
         }));
-      } else {
-        try {
-          const res = await callHistoryApi.getAll();
-          callItems = (res.data || []).map(c => ({
-            id: c.id, phoneNumber: c.phoneNumber, name: c.name, type: c.type,
-            duration: c.duration, timestamp: c.createdAt, sim: c.sim || 1,
-            isSpam: c.isSpam, source: 'api' as const,
-          }));
-        } catch {}
       }
       setCalls(callItems);
 

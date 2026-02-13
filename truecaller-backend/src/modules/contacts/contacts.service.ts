@@ -17,51 +17,65 @@ export class ContactsService {
     let synced = 0;
     let contributed = 0;
 
-    for (const contact of contacts) {
-      try {
-        const normalizedPhone = this.identityService.normalizePhone(contact.phoneNumber);
+    // Normalize all phone numbers upfront
+    const normalized = contacts.map((c) => ({
+      phoneNumber: this.identityService.normalizePhone(c.phoneNumber),
+      name: c.name,
+    }));
 
-        // Store user's contact
-        await this.prisma.userContact.upsert({
-          where: {
-            userId_phoneNumber: {
-              userId,
-              phoneNumber: normalizedPhone,
+    // Batch upsert user contacts using a transaction
+    const BATCH_SIZE = 200;
+    for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
+      const batch = normalized.slice(i, i + BATCH_SIZE);
+
+      await this.prisma.$transaction(
+        batch.map((c) =>
+          this.prisma.userContact.upsert({
+            where: {
+              userId_phoneNumber: {
+                userId,
+                phoneNumber: c.phoneNumber,
+              },
             },
-          },
-          create: {
-            userId,
-            phoneNumber: normalizedPhone,
-            name: contact.name,
-          },
-          update: {
-            name: contact.name,
-          },
-        });
-        synced++;
+            create: {
+              userId,
+              phoneNumber: c.phoneNumber,
+              name: c.name,
+            },
+            update: {
+              name: c.name,
+            },
+          }),
+        ),
+      );
+      synced += batch.length;
+    }
 
-        // Add name contribution to the global identity system
-        const contribution = await this.identityService.addNameContribution(
-          normalizedPhone,
-          contact.name,
+    // Add name contributions in bulk in background (don't block the response)
+    setImmediate(async () => {
+      try {
+        const result = await this.identityService.addNameContributionsBatch(
+          normalized.map((c) => ({ phoneNumber: c.phoneNumber, name: c.name })),
           userId,
           'CONTACT_UPLOAD',
           deviceFingerprint,
         );
-
-        if (contribution) contributed++;
+        contributed = result.created;
+        this.logger.log(
+          `User ${userId}: batch contributions done — ${result.created} created, ` +
+          `${result.skipped} skipped, ${result.junk} junk`,
+        );
       } catch (error) {
-        this.logger.error(`Failed to sync contact ${contact.phoneNumber}:`, error);
-        continue;
+        this.logger.error(`User ${userId}: batch contribution failed`, error);
       }
-    }
+    });
 
-    this.logger.log(`User ${userId} synced ${synced} contacts, ${contributed} name contributions added`);
+    this.logger.log(`User ${userId} synced ${synced} contacts (contributions processing in background)`);
 
     return {
       success: true,
       synced,
-      contributed,
+      contributed: 0, // will be processed async
       total: contacts.length,
     };
   }
