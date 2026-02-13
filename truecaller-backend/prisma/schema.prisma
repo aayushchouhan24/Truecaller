@@ -7,71 +7,99 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id          String   @id @default(uuid())
-  phoneNumber String   @unique @map("phone_number")
-  name        String?
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+// ── User ──────────────────────────────────────────────────────────────────
 
-  spamReports   SpamReport[]
-  contacts      UserContact[]
-  callHistory   CallHistory[]
-  messages      Message[]
-  searchHistory SearchHistory[]
-  favorites     Favorite[]
-  profileViews  ProfileView[]  @relation("profile_viewed")
-  viewsMade     ProfileView[]  @relation("viewer")
+enum VerificationLevel {
+  NONE
+  OTP_VERIFIED
+  ID_VERIFIED
+}
+
+model User {
+  id                String            @id @default(uuid())
+  phoneNumber       String            @unique @map("phone_number")
+  name              String?
+  verificationLevel VerificationLevel @default(OTP_VERIFIED) @map("verification_level")
+  trustScore        Float             @default(1.0) @map("trust_score")
+  isSuspicious      Boolean           @default(false) @map("is_suspicious")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  spamReports       SpamReport[]
+  contacts          UserContact[]
+  nameContributions NameContribution[]
 
   @@map("users")
 }
 
-// ── Profile Views ─────────────────────────────────────────────────────────
-
-model ProfileView {
-  id        String   @id @default(uuid())
-  viewedId  String   @map("viewed_id")
-  viewerId  String   @map("viewer_id")
-  createdAt DateTime @default(now()) @map("created_at")
-
-  viewed User @relation("profile_viewed", fields: [viewedId], references: [id], onDelete: Cascade)
-  viewer User @relation("viewer", fields: [viewerId], references: [id], onDelete: Cascade)
-
-  @@index([viewedId])
-  @@index([viewerId])
-  @@map("profile_views")
-}
+// ── Number Identity ───────────────────────────────────────────────────────
 
 model NumberIdentity {
-  id          String   @id @default(uuid())
-  phoneNumber String   @map("phone_number")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id                String    @id @default(uuid())
+  phoneNumber       String    @unique @map("phone_number")
+  resolvedName      String?   @map("resolved_name")
+  confidence        Float     @default(0) @map("confidence")
+  sourceCount       Int       @default(0) @map("source_count")
+  verifiedName      String?   @map("verified_name")
+  verificationLevel VerificationLevel @default(NONE) @map("verification_level")
+  lastResolvedAt    DateTime? @map("last_resolved_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  nameSignals NameSignal[]
+  contributions NameContribution[]
+  clusters      NameCluster[]
 
   @@index([phoneNumber])
   @@map("number_identities")
 }
 
+// ── Name Contributions ────────────────────────────────────────────────────
+
 enum SourceType {
-  USER_UPLOAD
+  CONTACT_UPLOAD
   MANUAL
-  VERIFIED
+  SELF_DECLARED
 }
 
-model NameSignal {
-  id         String     @id @default(uuid())
-  identityId String     @map("identity_id")
-  name       String
-  sourceType SourceType @default(MANUAL) @map("source_type")
-  weight     Float      @default(1.0)
-  createdAt  DateTime   @default(now()) @map("created_at")
+model NameContribution {
+  id                   String     @id @default(uuid())
+  identityId           String     @map("identity_id")
+  contributorId        String?    @map("contributor_id")
+  rawName              String     @map("raw_name")
+  cleanedName          String     @map("cleaned_name")
+  sourceType           SourceType @default(CONTACT_UPLOAD) @map("source_type")
+  contributorTrustWeight Float    @default(1.0) @map("contributor_trust_weight")
+  deviceFingerprint    String?    @map("device_fingerprint")
+  createdAt            DateTime   @default(now()) @map("created_at")
+
+  identity    NumberIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  contributor User?          @relation(fields: [contributorId], references: [id], onDelete: SetNull)
+
+  @@index([identityId])
+  @@index([contributorId])
+  @@index([cleanedName])
+  @@map("name_contributions")
+}
+
+// ── Name Clusters ─────────────────────────────────────────────────────────
+
+model NameCluster {
+  id               String   @id @default(uuid())
+  identityId       String   @map("identity_id")
+  representativeName String @map("representative_name")
+  variants         String[] @map("variants")
+  totalWeight      Float    @default(0) @map("total_weight")
+  frequency        Int      @default(0)
+  isSpamTagged     Boolean  @default(false) @map("is_spam_tagged")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
   identity NumberIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
 
-  @@map("name_signals")
+  @@index([identityId])
+  @@map("name_clusters")
 }
+
+// ── Spam ───────────────────────────────────────────────────────────────────
 
 model SpamReport {
   id          String   @id @default(uuid())
@@ -94,6 +122,8 @@ model SpamScore {
   @@map("spam_scores")
 }
 
+// ── User Contacts (for syncing & contributing names) ──────────────────────
+
 model UserContact {
   id          String   @id @default(uuid())
   userId      String   @map("user_id")
@@ -109,88 +139,17 @@ model UserContact {
   @@map("user_contacts")
 }
 
-// ── Call History ──────────────────────────────────────────────────────────
+// ── Rate Limiting for Anti-Manipulation ──────────────────────────────────
 
-enum CallType {
-  INCOMING
-  OUTGOING
-  MISSED
-  BLOCKED
-}
+model ContributionRateLimit {
+  id                String   @id @default(uuid())
+  deviceFingerprint String?  @map("device_fingerprint")
+  userId            String?  @map("user_id")
+  contributionCount Int      @default(0) @map("contribution_count")
+  windowStart       DateTime @default(now()) @map("window_start")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
-model CallHistory {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  phoneNumber String   @map("phone_number")
-  name        String?
-  type        CallType @default(INCOMING)
-  duration    Int      @default(0) // seconds
-  sim         Int      @default(1)
-  isSpam      Boolean  @default(false) @map("is_spam")
-  spamLabel   String?  @map("spam_label")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([phoneNumber])
-  @@map("call_history")
-}
-
-// ── Messages ──────────────────────────────────────────────────────────────
-
-enum MessageCategory {
-  PERSONAL
-  TRANSACTIONAL
-  PROMOTIONAL
-  SPAM
-  OTP
-}
-
-model Message {
-  id        String          @id @default(uuid())
-  userId    String          @map("user_id")
-  sender    String
-  body      String
-  category  MessageCategory @default(PERSONAL)
-  isRead    Boolean         @default(false) @map("is_read")
-  isSpam    Boolean         @default(false) @map("is_spam")
-  createdAt DateTime        @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("messages")
-}
-
-// ── Search History ────────────────────────────────────────────────────────
-
-model SearchHistory {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  query       String
-  phoneNumber String?  @map("phone_number")
-  resultName  String?  @map("result_name")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("search_history")
-}
-
-// ── Favorites ──────────────────────────────────────────────────────────────
-
-model Favorite {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  phoneNumber String   @map("phone_number")
-  name        String
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, phoneNumber])
-  @@index([userId])
-  @@map("favorites")
+  @@unique([deviceFingerprint])
+  @@unique([userId])
+  @@map("contribution_rate_limits")
 }

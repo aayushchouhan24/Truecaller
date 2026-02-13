@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { RedisService } from '../../redis/redis.service';
-import { IdentityService } from '../identity/identity.service';
+import { IdentityService, IdentityResult } from '../identity/identity.service';
 import { SpamService } from '../spam/spam.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -13,8 +13,10 @@ const CACHE_PREFIX = 'lookup:';
 
 export interface LookupResult {
   phoneNumber: string;
-  bestName: string | null;
-  confidenceScore: number;
+  name: string | null;
+  confidence: number;
+  sourceCount: number;
+  isVerified: boolean;
   spamScore: number;
   isLikelySpam: boolean;
 }
@@ -30,18 +32,8 @@ export class NumbersService {
     @InjectQueue('numbers') private readonly numbersQueue: Queue,
   ) {}
 
-  /** Normalize phone number to +91XXXXXXXXXX format */
-  private normalizePhone(phone: string): string {
-    let c = phone.replace(/[\s\-()]/g, '');
-    if (/^\d{10}$/.test(c)) c = '+91' + c;
-    else if (c.startsWith('91') && c.length === 12) c = '+' + c;
-    else if (c.startsWith('091') && c.length === 13) c = '+' + c.slice(1);
-    else if (!c.startsWith('+') && c.length > 5) c = '+' + c;
-    return c;
-  }
-
   async lookup(lookupDto: LookupDto): Promise<LookupResult> {
-    const phoneNumber = this.normalizePhone(lookupDto.phoneNumber);
+    const phoneNumber = this.identityService.normalizePhone(lookupDto.phoneNumber);
     const cacheKey = `${CACHE_PREFIX}${phoneNumber}`;
 
     // Check Redis cache
@@ -51,65 +43,69 @@ export class NumbersService {
       return JSON.parse(cached);
     }
 
-    // Compute identity
-    const identity = await this.identityService.computeIdentity(phoneNumber);
+    // Resolve identity using the full pipeline
+    const identity: IdentityResult = await this.identityService.resolveIdentity(phoneNumber);
     const spamScore = await this.spamService.getSpamScore(phoneNumber);
 
     const result: LookupResult = {
       phoneNumber,
-      bestName: identity.bestName,
-      confidenceScore: identity.confidenceScore,
+      name: identity.name,
+      confidence: identity.confidence,
+      sourceCount: identity.sourceCount,
+      isVerified: identity.isVerified,
       spamScore,
       isLikelySpam: spamScore > 5,
     };
 
     // Cache result
     await this.redisService.set(cacheKey, JSON.stringify(result), CACHE_TTL);
-    this.logger.debug(`Cached lookup result for ${phoneNumber}`);
 
     return result;
   }
 
   async reportSpam(userId: string, reportSpamDto: ReportSpamDto) {
     const { phoneNumber, reason } = reportSpamDto;
+    const normalized = this.identityService.normalizePhone(phoneNumber);
 
-    const report = await this.spamService.reportSpam(
-      userId,
-      phoneNumber,
-      reason,
-    );
+    const report = await this.spamService.reportSpam(userId, normalized, reason);
 
     // Invalidate cache
-    await this.redisService.del(`${CACHE_PREFIX}${phoneNumber}`);
+    await this.redisService.del(`${CACHE_PREFIX}${normalized}`);
 
     // Trigger background job
     await this.numbersQueue.add('update-confidence-after-spam', {
-      phoneNumber,
+      phoneNumber: normalized,
       reportId: report.id,
     });
 
     return { message: 'Spam reported successfully', reportId: report.id };
   }
 
-  async addName(addNameDto: AddNameDto) {
-    const { phoneNumber, name, sourceType, weight } = addNameDto;
+  async addName(userId: string, addNameDto: AddNameDto) {
+    const { phoneNumber, name, sourceType, deviceFingerprint } = addNameDto;
+    const normalized = this.identityService.normalizePhone(phoneNumber);
 
-    const signal = await this.identityService.addNameSignal(
-      phoneNumber,
+    const contribution = await this.identityService.addNameContribution(
+      normalized,
       name,
-      sourceType,
-      weight,
+      userId,
+      sourceType || 'MANUAL',
+      deviceFingerprint,
     );
 
-    // Invalidate cache
-    await this.redisService.del(`${CACHE_PREFIX}${phoneNumber}`);
+    if (!contribution) {
+      return { message: 'Name was filtered as junk', contributed: false };
+    }
 
-    // Trigger background job to recalculate
-    await this.numbersQueue.add('recalculate-confidence', {
-      phoneNumber,
-      signalId: signal.id,
+    // Invalidate cache
+    await this.redisService.del(`${CACHE_PREFIX}${normalized}`);
+
+    // Trigger background recalculation
+    await this.numbersQueue.add('recalculate-identity', {
+      phoneNumber: normalized,
+      contributionId: contribution.id,
     });
 
-    return { message: 'Name signal added successfully', signalId: signal.id };
+    return { message: 'Name contribution added', contributionId: contribution.id, contributed: true };
   }
 }

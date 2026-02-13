@@ -23,7 +23,10 @@ export class NumbersController {
   }
 
   @Post('add-name')
-  async addName(@Body() addNameDto: AddNameDto) {
-    return this.numbersService.addName(addNameDto);
+  async addName(
+    @CurrentUser('id') userId: string,
+    @Body() addNameDto: AddNameDto,
+  ) {
+    return this.numbersService.addName(userId, addNameDto);
   }
 }

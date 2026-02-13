@@ -17,10 +17,6 @@ import { IdentityModule } from './modules/identity/identity.module';
 import { NumbersModule } from './modules/numbers/numbers.module';
 import { SpamModule } from './modules/spam/spam.module';
 import { ContactsModule } from './modules/contacts/contacts.module';
-import { CallHistoryModule } from './modules/call-history/call-history.module';
-import { MessagesModule } from './modules/messages/messages.module';
-import { SearchHistoryModule } from './modules/search-history/search-history.module';
-import { FavoritesModule } from './modules/favorites/favorites.module';
 import { JobsModule } from './jobs/jobs.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
 
@@ -48,12 +44,29 @@ import { FirebaseModule } from './modules/firebase/firebase.module';
     // BullMQ
     BullModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        connection: {
-          host: config.get<string>('redis.host', 'localhost'),
-          port: config.get<number>('redis.port', 6379),
-        },
-      }),
+      useFactory: (config: ConfigService) => {
+        const redisUrl = config.get<string>('REDIS_URL');
+        if (redisUrl) {
+          const url = new URL(redisUrl);
+          return {
+            connection: {
+              host: url.hostname,
+              port: parseInt(url.port, 10),
+              username: url.username || undefined,
+              password: url.password || undefined,
+              tls: redisUrl.startsWith('rediss://') ? {} : undefined,
+              maxRetriesPerRequest: null,
+            },
+          };
+        }
+        return {
+          connection: {
+            host: config.get<string>('redis.host', 'localhost'),
+            port: config.get<number>('redis.port', 6379),
+            maxRetriesPerRequest: null,
+          },
+        };
+      },
     }),
 
     // Core modules
@@ -68,10 +81,6 @@ import { FirebaseModule } from './modules/firebase/firebase.module';
     NumbersModule,
     SpamModule,
     ContactsModule,
-    CallHistoryModule,
-    MessagesModule,
-    SearchHistoryModule,
-    FavoritesModule,
     JobsModule,
   ],
   providers: [

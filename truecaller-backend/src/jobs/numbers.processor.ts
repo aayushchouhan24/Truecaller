@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
+import { IdentityService } from '../modules/identity/identity.service';
 
 @Processor('numbers')
 export class NumbersProcessor extends WorkerHost {
@@ -11,14 +12,15 @@ export class NumbersProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
+    private readonly identityService: IdentityService,
   ) {
     super();
   }
 
   async process(job: Job): Promise<void> {
     switch (job.name) {
-      case 'recalculate-confidence':
-        await this.handleRecalculateConfidence(job.data);
+      case 'recalculate-identity':
+        await this.handleRecalculateIdentity(job.data);
         break;
       case 'update-confidence-after-spam':
         await this.handleUpdateConfidenceAfterSpam(job.data);
@@ -28,18 +30,26 @@ export class NumbersProcessor extends WorkerHost {
     }
   }
 
-  private async handleRecalculateConfidence(data: {
+  private async handleRecalculateIdentity(data: {
     phoneNumber: string;
-    signalId: string;
+    contributionId: string;
   }) {
     this.logger.log(
-      `Recalculating confidence for ${data.phoneNumber} (signal: ${data.signalId})`,
+      `Recalculating identity for ${data.phoneNumber} (contribution: ${data.contributionId})`,
     );
 
-    // Invalidate any related caches
-    await this.redisService.del(`lookup:${data.phoneNumber}`);
+    try {
+      // Re-resolve the identity (triggers clustering + best name selection)
+      const result = await this.identityService.resolveIdentity(data.phoneNumber);
+      this.logger.log(
+        `Identity resolved: ${data.phoneNumber} → "${result.name}" (${result.confidence}% confidence)`,
+      );
+    } catch (error) {
+      this.logger.error(`Failed to recalculate identity for ${data.phoneNumber}`, error);
+    }
 
-    this.logger.log(`Confidence recalculation complete for ${data.phoneNumber}`);
+    // Invalidate cache
+    await this.redisService.del(`lookup:${data.phoneNumber}`);
   }
 
   private async handleUpdateConfidenceAfterSpam(data: {
@@ -47,7 +57,7 @@ export class NumbersProcessor extends WorkerHost {
     reportId: string;
   }) {
     this.logger.log(
-      `Updating confidence after spam report for ${data.phoneNumber}`,
+      `Updating after spam report for ${data.phoneNumber}`,
     );
 
     // Get current spam score
@@ -57,13 +67,21 @@ export class NumbersProcessor extends WorkerHost {
 
     if (spamScore && spamScore.score > 5) {
       this.logger.warn(
-        `${data.phoneNumber} is now flagged as likely spam (score: ${spamScore.score})`,
+        `${data.phoneNumber} flagged as likely spam (score: ${spamScore.score})`,
       );
+
+      // Mark clusters as spam-tagged if score is high
+      await this.prisma.nameCluster.updateMany({
+        where: {
+          identity: { phoneNumber: data.phoneNumber },
+        },
+        data: { isSpamTagged: true },
+      });
     }
 
     // Invalidate cache
     await this.redisService.del(`lookup:${data.phoneNumber}`);
 
-    this.logger.log(`Spam confidence update complete for ${data.phoneNumber}`);
+    this.logger.log(`Spam update complete for ${data.phoneNumber}`);
   }
 }

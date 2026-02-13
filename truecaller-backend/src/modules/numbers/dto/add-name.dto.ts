@@ -2,11 +2,8 @@ import {
   IsNotEmpty,
   IsString,
   IsOptional,
-  IsNumber,
   IsEnum,
   Matches,
-  Min,
-  Max,
 } from 'class-validator';
 import { SourceType } from '@prisma/client';
 
@@ -26,9 +23,7 @@ export class AddNameDto {
   @IsOptional()
   sourceType?: SourceType;
 
-  @IsNumber()
+  @IsString()
   @IsOptional()
-  @Min(0.1)
-  @Max(5.0)
-  weight?: number;
+  deviceFingerprint?: string;
 }
