@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  phoneNumber String   @unique @map("phone_number")
+  name        String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  spamReports   SpamReport[]
+  contacts      UserContact[]
+  callHistory   CallHistory[]
+  messages      Message[]
+  searchHistory SearchHistory[]
+  favorites     Favorite[]
+  profileViews  ProfileView[]  @relation("profile_viewed")
+  viewsMade     ProfileView[]  @relation("viewer")
+
+  @@map("users")
+}
+
+// ── Profile Views ─────────────────────────────────────────────────────────
+
+model ProfileView {
+  id        String   @id @default(uuid())
+  viewedId  String   @map("viewed_id")
+  viewerId  String   @map("viewer_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  viewed User @relation("profile_viewed", fields: [viewedId], references: [id], onDelete: Cascade)
+  viewer User @relation("viewer", fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@index([viewedId])
+  @@index([viewerId])
+  @@map("profile_views")
+}
+
+model NumberIdentity {
+  id          String   @id @default(uuid())
+  phoneNumber String   @map("phone_number")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  nameSignals NameSignal[]
+
+  @@index([phoneNumber])
+  @@map("number_identities")
+}
+
+enum SourceType {
+  USER_UPLOAD
+  MANUAL
+  VERIFIED
+}
+
+model NameSignal {
+  id         String     @id @default(uuid())
+  identityId String     @map("identity_id")
+  name       String
+  sourceType SourceType @default(MANUAL) @map("source_type")
+  weight     Float      @default(1.0)
+  createdAt  DateTime   @default(now()) @map("created_at")
+
+  identity NumberIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@map("name_signals")
+}
+
+model SpamReport {
+  id          String   @id @default(uuid())
+  reporterId  String   @map("reporter_id")
+  phoneNumber String   @map("phone_number")
+  reason      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([phoneNumber])
+  @@map("spam_reports")
+}
+
+model SpamScore {
+  phoneNumber String   @unique @map("phone_number")
+  score       Int      @default(0)
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("spam_scores")
+}
+
+model UserContact {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  phoneNumber String   @map("phone_number")
+  name        String
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, phoneNumber])
+  @@index([phoneNumber])
+  @@map("user_contacts")
+}
+
+// ── Call History ──────────────────────────────────────────────────────────
+
+enum CallType {
+  INCOMING
+  OUTGOING
+  MISSED
+  BLOCKED
+}
+
+model CallHistory {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  phoneNumber String   @map("phone_number")
+  name        String?
+  type        CallType @default(INCOMING)
+  duration    Int      @default(0) // seconds
+  sim         Int      @default(1)
+  isSpam      Boolean  @default(false) @map("is_spam")
+  spamLabel   String?  @map("spam_label")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([phoneNumber])
+  @@map("call_history")
+}
+
+// ── Messages ──────────────────────────────────────────────────────────────
+
+enum MessageCategory {
+  PERSONAL
+  TRANSACTIONAL
+  PROMOTIONAL
+  SPAM
+  OTP
+}
+
+model Message {
+  id        String          @id @default(uuid())
+  userId    String          @map("user_id")
+  sender    String
+  body      String
+  category  MessageCategory @default(PERSONAL)
+  isRead    Boolean         @default(false) @map("is_read")
+  isSpam    Boolean         @default(false) @map("is_spam")
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("messages")
+}
+
+// ── Search History ────────────────────────────────────────────────────────
+
+model SearchHistory {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  query       String
+  phoneNumber String?  @map("phone_number")
+  resultName  String?  @map("result_name")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("search_history")
+}
+
+// ── Favorites ──────────────────────────────────────────────────────────────
+
+model Favorite {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  phoneNumber String   @map("phone_number")
+  name        String
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, phoneNumber])
+  @@index([userId])
+  @@map("favorites")
+}
