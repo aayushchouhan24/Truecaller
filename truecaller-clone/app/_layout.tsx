@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -8,6 +8,7 @@ import 'react-native-reanimated';
 import { useAuthStore } from '../src/store/authStore';
 import { callerIdBridge } from '../src/modules/CallerIdBridge';
 import { API_BASE_URL } from '../src/constants/config';
+import CustomSplashScreen from '../components/SplashScreen';
 
 const TruecallerDark = {
   ...DarkTheme,
@@ -28,6 +29,7 @@ export const unstable_settings = {
 
 export default function RootLayout() {
   const { hydrate, isAuthenticated, isLoading, token } = useAuthStore();
+  const [showSplash, setShowSplash] = useState(true);
 
   useEffect(() => {
     hydrate();
@@ -65,6 +67,10 @@ export default function RootLayout() {
 
     initCallerId();
   }, [isAuthenticated, token]);
+
+  if (showSplash) {
+    return <CustomSplashScreen onFinish={() => setShowSplash(false)} />;
+  }
 
   return (
     <ThemeProvider value={TruecallerDark}>
