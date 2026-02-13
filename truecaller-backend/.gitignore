@@ -3,3 +3,5 @@ node_modules/
 dist/
 *.js.map
 *.d.ts
+firebase-service-account
+truecaller-backend/firebase-service-account.json
