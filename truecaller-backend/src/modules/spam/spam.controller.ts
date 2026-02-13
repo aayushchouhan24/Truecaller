@@ -19,4 +19,9 @@ export class SpamController {
   getReportsForNumber(@Query('phoneNumber') phoneNumber: string) {
     return this.spamService.getReportsForNumber(phoneNumber);
   }
+
+  @Get('analyze')
+  analyzeSpam(@Query('phoneNumber') phoneNumber: string) {
+    return this.spamService.analyzeSpamWithAI(phoneNumber);
+  }
 }

@@ -8,6 +8,7 @@ import appConfig from './config/app.config';
 import databaseConfig from './config/database.config';
 import redisConfig from './config/redis.config';
 import jwtConfig from './config/jwt.config';
+import ollamaConfig from './config/ollama.config';
 
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
@@ -20,6 +21,7 @@ import { ContactsModule } from './modules/contacts/contacts.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { JobsModule } from './jobs/jobs.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
+import { OllamaModule } from './modules/ollama/ollama.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -27,7 +29,7 @@ import { HealthController } from './health.controller';
     // Configuration
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [appConfig, databaseConfig, redisConfig, jwtConfig],
+      load: [appConfig, databaseConfig, redisConfig, jwtConfig, ollamaConfig],
     }),
 
     // Rate Limiting
@@ -75,6 +77,7 @@ import { HealthController } from './health.controller';
     DatabaseModule,
     RedisModule,
     FirebaseModule,
+    OllamaModule,
 
     // Feature modules
     AuthModule,

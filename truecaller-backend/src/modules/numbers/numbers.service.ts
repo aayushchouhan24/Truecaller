@@ -19,6 +19,8 @@ export interface LookupResult {
   isVerified: boolean;
   spamScore: number;
   isLikelySpam: boolean;
+  spamCategory?: string;
+  numberCategory?: string;
 }
 
 @Injectable()
@@ -47,14 +49,43 @@ export class NumbersService {
     const identity: IdentityResult = await this.identityService.resolveIdentity(phoneNumber);
     const spamScore = await this.spamService.getSpamScore(phoneNumber);
 
+    // Run AI-enhanced spam analysis if score is ambiguous (between 2-15)
+    let spamCategory: string | undefined;
+    let finalSpamScore = spamScore;
+    let isLikelySpam = spamScore > 5;
+
+    if (spamScore >= 2) {
+      try {
+        const aiSpam = await this.spamService.analyzeSpamWithAI(phoneNumber);
+        finalSpamScore = Math.round(aiSpam.spamScore / 10); // normalize
+        isLikelySpam = aiSpam.isSpam;
+        spamCategory = aiSpam.category;
+      } catch {
+        // fallback already set above
+      }
+    }
+
+    // AI categorization for identified numbers
+    let numberCategory: string | undefined;
+    if (identity.name) {
+      try {
+        const cat = await this.spamService.categorizeWithAI(phoneNumber, identity.name);
+        if (cat) numberCategory = cat.category;
+      } catch {
+        // ignore
+      }
+    }
+
     const result: LookupResult = {
       phoneNumber,
       name: identity.name,
       confidence: identity.confidence,
       sourceCount: identity.sourceCount,
       isVerified: identity.isVerified,
-      spamScore,
-      isLikelySpam: spamScore > 5,
+      spamScore: finalSpamScore,
+      isLikelySpam,
+      spamCategory,
+      numberCategory,
     };
 
     // Cache result

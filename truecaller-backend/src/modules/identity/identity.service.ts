@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { OllamaService } from '../ollama/ollama.service';
 import { SourceType } from '@prisma/client';
 import {
   cleanName,
@@ -44,7 +45,10 @@ const SCORE_WEIGHTS = {
 export class IdentityService {
   private readonly logger = new Logger(IdentityService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly ollamaService: OllamaService,
+  ) {}
 
   // ── Phone Normalization ─────────────────────────────────────────────
 
@@ -427,19 +431,31 @@ export class IdentityService {
       };
     }
 
-    // ── STEP 8: Select best name inside winning cluster ──
-    const bestName = this.selectBestNameInCluster(winner);
+    // ── STEP 8: Select best name — try Ollama LLM first, fallback to heuristic ──
+    let bestName: string;
+    let confidence: number;
 
-    // ── STEP 9: Confidence = weighted AI score (0-100) ──
-    const totalAIScore = scoredClusters.reduce((s, c) => s + c.aiScore, 0);
-    const confidence = totalAIScore > 0
-      ? Math.round((winner.aiScore / totalAIScore) * 100)
-      : 0;
+    const aiResult = await this.resolveNameWithAI(normalized, scoredClusters, identity.contributions);
 
-    this.logger.log(
-      `AI resolved "${bestName}" for ${normalized} (confidence=${confidence}, ` +
-      `clusters=${scoredClusters.length}, contributions=${identity.contributions.length})`,
-    );
+    if (aiResult) {
+      bestName = capitalizeName(aiResult.bestName);
+      confidence = aiResult.confidence;
+      this.logger.log(
+        `LLM resolved "${bestName}" for ${normalized} (confidence=${confidence}, ` +
+        `reason: ${aiResult.reasoning})`,
+      );
+    } else {
+      // Fallback to heuristic
+      bestName = this.selectBestNameInCluster(winner);
+      const totalAIScore = scoredClusters.reduce((s, c) => s + c.aiScore, 0);
+      confidence = totalAIScore > 0
+        ? Math.round((winner.aiScore / totalAIScore) * 100)
+        : 0;
+      this.logger.log(
+        `Heuristic resolved "${bestName}" for ${normalized} (confidence=${confidence}, ` +
+        `clusters=${scoredClusters.length}, contributions=${identity.contributions.length})`,
+      );
+    }
 
     // Update the resolved name in DB
     await this.prisma.numberIdentity.update({
@@ -461,6 +477,38 @@ export class IdentityService {
       sourceCount: identity.sourceCount,
       isVerified: false,
     };
+  }
+
+  // ── LLM-Powered Name Resolution ────────────────────────────────────
+
+  private async resolveNameWithAI(
+    phoneNumber: string,
+    scoredClusters: (NameClusterData & { aiScore: number })[],
+    contributions: { cleanedName: string; contributorTrustWeight: number; sourceType: string; createdAt: Date }[],
+  ) {
+    if (!this.ollamaService.isReady()) return null;
+    if (scoredClusters.length < 2) return null; // No ambiguity, skip AI
+
+    try {
+      const nameVariants = scoredClusters.map((cluster) => {
+        const clusterContribs = contributions.filter((c) =>
+          cluster.variants.some((v) => nameSimilarity(c.cleanedName, v) >= CLUSTER_THRESHOLD),
+        );
+        const sourceTypes = [...new Set(clusterContribs.map((c) => c.sourceType))];
+
+        return {
+          name: capitalizeName(cluster.representativeName),
+          frequency: cluster.frequency,
+          trustWeight: cluster.totalWeight,
+          sources: sourceTypes,
+        };
+      });
+
+      return await this.ollamaService.analyzeBestName(phoneNumber, nameVariants);
+    } catch (err) {
+      this.logger.warn(`LLM name resolution failed, falling back to heuristic: ${err.message}`);
+      return null;
+    }
   }
 
   // ── Clustering Logic ────────────────────────────────────────────────
