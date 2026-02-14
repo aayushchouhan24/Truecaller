@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get } from '@nestjs/common';
+import { Controller, Post, Body, Get, Delete } from '@nestjs/common';
 import { NumbersService } from './numbers.service';
 import { LookupDto } from './dto/lookup.dto';
 import { ReportSpamDto } from './dto/report-spam.dto';
@@ -10,8 +10,11 @@ export class NumbersController {
   constructor(private readonly numbersService: NumbersService) {}
 
   @Post('lookup')
-  async lookup(@Body() lookupDto: LookupDto) {
-    return this.numbersService.lookup(lookupDto);
+  async lookup(
+    @CurrentUser('id') userId: string,
+    @Body() lookupDto: LookupDto,
+  ) {
+    return this.numbersService.lookup(lookupDto, userId);
   }
 
   @Post('report-spam')
@@ -20,6 +23,14 @@ export class NumbersController {
     @Body() reportSpamDto: ReportSpamDto,
   ) {
     return this.numbersService.reportSpam(userId, reportSpamDto);
+  }
+
+  @Post('remove-spam')
+  async removeSpam(
+    @CurrentUser('id') userId: string,
+    @Body('phoneNumber') phoneNumber: string,
+  ) {
+    return this.numbersService.removeSpamReport(userId, phoneNumber);
   }
 
   @Post('add-name')

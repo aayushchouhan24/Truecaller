@@ -132,11 +132,12 @@ class CallLogsService {
   }
 
   private mapType(t: string | number): DeviceCallLog['type'] {
-    switch (String(t)) {
-      case '1': return 'INCOMING';
-      case '2': return 'OUTGOING';
-      case '3': return 'MISSED';
-      case '5': case '6': return 'BLOCKED';
+    const s = String(t).toUpperCase();
+    switch (s) {
+      case '1': case 'INCOMING': return 'INCOMING';
+      case '2': case 'OUTGOING': return 'OUTGOING';
+      case '3': case 'MISSED': return 'MISSED';
+      case '5': case '6': case 'BLOCKED': case 'REJECTED': return 'BLOCKED';
       default: return 'INCOMING';
     }
   }

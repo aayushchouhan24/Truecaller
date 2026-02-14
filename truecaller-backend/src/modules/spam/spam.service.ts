@@ -41,7 +41,63 @@ export class SpamService {
 
   async isLikelySpam(phoneNumber: string): Promise<boolean> {
     const score = await this.getSpamScore(phoneNumber);
-    return score > 5;
+    const reporters = await this.getUniqueReporterCount(phoneNumber);
+    return reporters >= 3 && score > 5;
+  }
+
+  /**
+   * Count unique reporters for a phone number.
+   */
+  async getUniqueReporterCount(phoneNumber: string): Promise<number> {
+    const reports = await this.prisma.spamReport.findMany({
+      where: { phoneNumber },
+      select: { reporterId: true },
+      distinct: ['reporterId'],
+    });
+    return reports.length;
+  }
+
+  /**
+   * Remove a user's spam report and decrement the score.
+   */
+  async removeSpamReport(
+    reporterId: string,
+    phoneNumber: string,
+  ): Promise<{ removed: boolean; message: string }> {
+    // Find user's report(s) for this number
+    const reports = await this.prisma.spamReport.findMany({
+      where: { reporterId, phoneNumber },
+    });
+
+    if (reports.length === 0) {
+      return { removed: false, message: 'No spam report found for this number from this user' };
+    }
+
+    // Delete the reports
+    await this.prisma.spamReport.deleteMany({
+      where: { reporterId, phoneNumber },
+    });
+
+    // Decrement the spam score
+    const currentScore = await this.getSpamScore(phoneNumber);
+    const newScore = Math.max(0, currentScore - reports.length);
+
+    if (newScore === 0) {
+      await this.prisma.spamScore.deleteMany({
+        where: { phoneNumber },
+      });
+    } else {
+      await this.prisma.spamScore.updateMany({
+        where: { phoneNumber },
+        data: { score: newScore },
+      });
+    }
+
+    this.logger.log(
+      `Spam report removed for ${phoneNumber} by ${reporterId} (score: ${currentScore} → ${newScore})`,
+    );
+
+    return { removed: true, message: 'Spam report removed successfully' };
   }
 
   async getTopSpamNumbers(limit = 20) {

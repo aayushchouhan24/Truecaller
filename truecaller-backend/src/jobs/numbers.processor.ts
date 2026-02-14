@@ -3,7 +3,7 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
-import { IdentityService } from '../modules/identity/identity.service';
+import { IdentityIntelligenceService } from '../modules/identity/identity-intelligence.service';
 import { SpamService } from '../modules/spam/spam.service';
 
 @Processor('numbers')
@@ -13,7 +13,7 @@ export class NumbersProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
-    private readonly identityService: IdentityService,
+    private readonly intelligenceService: IdentityIntelligenceService,
     private readonly spamService: SpamService,
   ) {
     super();
@@ -44,10 +44,10 @@ export class NumbersProcessor extends WorkerHost {
     );
 
     try {
-      // Re-resolve the identity (triggers clustering + best name selection)
-      const result = await this.identityService.resolveIdentity(data.phoneNumber);
+      // Re-resolve the identity using the new intelligence engine
+      const result = await this.intelligenceService.resolveIdentityProfile(data.phoneNumber);
       this.logger.log(
-        `Identity resolved: ${data.phoneNumber} → "${result.name}" (${result.confidence}% confidence)`,
+        `Identity resolved: ${data.phoneNumber} → "${result.name}" (${result.confidence} confidence)`,
       );
     } catch (error) {
       this.logger.error(`Failed to recalculate identity for ${data.phoneNumber}`, error);

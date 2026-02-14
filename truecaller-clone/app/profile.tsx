@@ -8,7 +8,7 @@ import { router } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { useAuthStore } from '../src/store/authStore';
 import { callBlockingService } from '../src/services/callBlocking';
-import { usersApi } from '../src/services/api';
+import { numbersApi, usersApi } from '../src/services/api';
 
 /* ── helpers ─────────────────────────────────────────── */
 const getInitials = (n: string | null) => {
@@ -55,6 +55,8 @@ export default function ProfileScreen() {
   });
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [blockListVisible, setBlockListVisible] = useState(false);
+  const [spamReportsVisible, setSpamReportsVisible] = useState(false);
+  const [spamReports, setSpamReports] = useState<{ phoneNumber: string; reason: string | null; createdAt: string; count: number }[]>([]);
   const [editName, setEditName] = useState(user?.name || '');
   const [saving, setSaving] = useState(false);
   // Calculate profile completion based on what the user has filled in
@@ -131,14 +133,8 @@ export default function ProfileScreen() {
           <View style={s.avatarRingWrap}>
             <View style={s.avatarCircle}>
               <Text style={s.avatarT}>{getInitials(user?.name || null)}</Text>
-            </View>
-            <View style={s.percentBadge}>
-              <Text style={s.percentBadgeT}>{completionPercent}%</Text>
-            </View>
+            </View>           
           </View>
-          <TouchableOpacity onPress={() => Alert.alert('Coming Soon', 'Gender feature will be available in a future update.')}>
-            <Text style={s.genderLink}>Add gender to get 10%</Text>
-          </TouchableOpacity>
         </View>
 
         {/* ── Action Buttons ────────────────── */}
@@ -172,20 +168,22 @@ export default function ProfileScreen() {
           <MenuItem icon="search" iconLib="ion" label="Who searched for me"
             badge={stats.searchedBy > 0 ? `${stats.searchedBy}` : undefined}
             onPress={() => router.push('/who-searched')} />
-          <MenuItem icon="people-outline" iconLib="ion" label="Contact requests"
-            onPress={() => Alert.alert('Contact Requests', 'No pending contact requests.')} />
-          <MenuItem icon="shield-checkmark-outline" iconLib="ion" label="Fraud insurance"
-            onPress={() => Alert.alert('Fraud Insurance', 'Fraud insurance is available with Premium subscription.')} />
         </View>
 
         {/* ── Stats Section ─────────────────── */}
         <View style={s.statsSection}>
           <Text style={s.statsTitle}>Your Truecaller stats</Text>
           <View style={s.statsGrid}>
-            <View style={s.statCard}>
+            <TouchableOpacity style={s.statCard} onPress={async () => {
+              try {
+                const res = await usersApi.getSpamReports();
+                setSpamReports(res.data || []);
+              } catch {}
+              setSpamReportsVisible(true);
+            }}>
               <Text style={s.statNum}>{stats.spamReported}</Text>
               <Text style={s.statLabel}>Spam reported</Text>
-            </View>
+            </TouchableOpacity>
             <View style={s.statCard}>
               <Text style={s.statNum}>{blockedCount}</Text>
               <Text style={s.statLabel}>Numbers blocked</Text>
@@ -259,6 +257,51 @@ export default function ProfileScreen() {
                     <TouchableOpacity onPress={() => handleUnblock(b.phoneNumber)}
                       style={{ backgroundColor: '#2C2C2E', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 6 }}>
                       <Text style={{ color: '#F44336', fontSize: 13, fontWeight: '600' }}>Unblock</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+      {/* ── Spam Reports Modal ──────────── */}
+      <Modal visible={spamReportsVisible} transparent animationType="slide" onRequestClose={() => setSpamReportsVisible(false)}>
+        <View style={s.modalOverlay}>
+          <View style={[s.modalBox, { maxHeight: '70%' }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <Text style={s.modalTitle}>Your Spam Reports</Text>
+              <TouchableOpacity onPress={() => setSpamReportsVisible(false)}>
+                <Ionicons name="close" size={24} color="#8E8E93" />
+              </TouchableOpacity>
+            </View>
+            {spamReports.length === 0 ? (
+              <View style={{ alignItems: 'center', paddingVertical: 32 }}>
+                <Ionicons name="shield-checkmark-outline" size={48} color="#4CAF50" />
+                <Text style={{ color: '#8E8E93', fontSize: 14, marginTop: 12 }}>No spam reports yet</Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 400 }}>
+                {spamReports.map((r, i) => (
+                  <View key={i} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: '#1C1C1E' }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: '#FFF', fontSize: 15 }}>{r.phoneNumber}</Text>
+                      {r.reason ? <Text style={{ color: '#6B6B6B', fontSize: 12, marginTop: 2 }}>{r.reason}</Text> : null}
+                      <Text style={{ color: '#3A3A3C', fontSize: 11, marginTop: 2 }}>
+                        {new Date(r.createdAt).toLocaleDateString()}
+                      </Text>
+                    </View>
+                    <TouchableOpacity onPress={async () => {
+                      try {
+                        const res = await numbersApi.removeSpam(r.phoneNumber);
+                        if (res.data?.removed) {
+                          setSpamReports((prev) => prev.filter((_, idx) => idx !== i));
+                          setStats((prev) => ({ ...prev, spamReported: Math.max(0, prev.spamReported - 1) }));
+                        }
+                      } catch {}
+                    }}
+                      style={{ backgroundColor: '#2C2C2E', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 6 }}>
+                      <Text style={{ color: '#F44336', fontSize: 13, fontWeight: '600' }}>Remove</Text>
                     </TouchableOpacity>
                   </View>
                 ))}

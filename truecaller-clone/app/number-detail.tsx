@@ -41,6 +41,10 @@ export default function NumberDetailScreen() {
   const [isSpam, setIsSpam] = useState(false);
   const [carrier] = useState('');
   const [location] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
+  const [probableRole, setProbableRole] = useState<string | null>(null);
+  const [description, setDescription] = useState<string | null>(null);
+  const [hasUserReportedSpam, setHasUserReportedSpam] = useState(false);
   const [nameModalVisible, setNameModalVisible] = useState(false);
   const [suggestedName, setSuggestedName] = useState('');
   const [submittingName, setSubmittingName] = useState(false);
@@ -55,13 +59,18 @@ export default function NumberDetailScreen() {
     try {
       const res = await numbersApi.lookup(phone);
       const d = res.data;
-      if (d.name) setName(d.name);
-      setSpamScore(d.spamScore);
-      setConfidence(d.confidence);
-      setIsSpam(d.isLikelySpam);
+      // Always update name — use backend resolved name, or fall back to passed name
+      setName(d.name || passedName || 'Unknown Number');
+      setSpamScore(d.spamScore ?? 0);
+      setConfidence(d.confidence ?? 0);
+      setIsSpam(d.isLikelySpam ?? false);
+      setTags(d.tags ?? []);
+      setProbableRole(d.probableRole ?? null);
+      setDescription(d.description ?? null);
+      setHasUserReportedSpam(d.hasUserReportedSpam ?? false);
       await storageService.addRecentLookup(d);
-    } catch {
-      // Use passed name, no API data
+    } catch (err) {
+      console.warn('Lookup failed:', err);
     } finally {
       setLoading(false);
     }
@@ -128,6 +137,27 @@ export default function NumberDetailScreen() {
           try {
             await numbersApi.reportSpam({ phoneNumber: phone, reason: 'Reported by user' });
             Alert.alert('Reported', 'Spam report submitted');
+            setHasUserReportedSpam(true);
+            lookupNumber();
+          } catch (e: any) {
+            Alert.alert('Error', e.message);
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleRemoveSpam = async () => {
+    Alert.alert('Remove Spam Report', `Remove your spam report for ${phone}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        onPress: async () => {
+          try {
+            const res = await numbersApi.removeSpam(phone);
+            const d = res.data;
+            Alert.alert(d.removed ? 'Removed' : 'Not Found', d.message);
+            if (d.removed) setHasUserReportedSpam(false);
             lookupNumber();
           } catch (e: any) {
             Alert.alert('Error', e.message);
@@ -239,6 +269,30 @@ export default function NumberDetailScreen() {
           </View>
         </View>
 
+        {/* Identity Intelligence Card */}
+        {(probableRole || description || tags.length > 0) && (
+          <View style={st.intelCard}>
+            {probableRole && (
+              <View style={st.roleRow}>
+                <Ionicons name="briefcase" size={16} color="#FF9800" />
+                <Text style={st.roleText}>{probableRole}</Text>
+              </View>
+            )}
+            {description && (
+              <Text style={st.descText}>{description}</Text>
+            )}
+            {tags.length > 0 && (
+              <View style={st.tagsRow}>
+                {tags.map((tag, i) => (
+                  <View key={i} style={st.tagChip}>
+                    <Text style={st.tagChipT}>{tag}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+
         {/* Action Buttons */}
         <View style={st.actions}>
           <TouchableOpacity style={st.actionBtn} onPress={handleCall}>
@@ -284,6 +338,16 @@ export default function NumberDetailScreen() {
             <Text style={st.moreText}>Report as spam</Text>
             <Ionicons name="chevron-forward" size={18} color="#5A5A5E" />
           </TouchableOpacity>
+          {hasUserReportedSpam && (
+            <>
+              <View style={st.moreSep} />
+              <TouchableOpacity style={st.moreRow} onPress={handleRemoveSpam}>
+                <Ionicons name="shield-checkmark" size={20} color="#4CAF50" />
+                <Text style={st.moreText}>Remove spam report</Text>
+                <Ionicons name="chevron-forward" size={18} color="#5A5A5E" />
+              </TouchableOpacity>
+            </>
+          )}
           <View style={st.moreSep} />
           <TouchableOpacity style={st.moreRow} onPress={handleAddName}>
             <Ionicons name="create" size={20} color="#2196F3" />
@@ -372,6 +436,15 @@ const st = StyleSheet.create({
   infoCard: { backgroundColor: '#1A1A1A', marginHorizontal: 16, borderRadius: 14, padding: 14, marginTop: 12, gap: 12 },
   infoRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   infoText: { color: '#FFF', fontSize: 14 },
+
+  /* identity intelligence */
+  intelCard: { backgroundColor: '#1A1A1A', marginHorizontal: 16, borderRadius: 14, padding: 14, marginTop: 10, gap: 10 },
+  roleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  roleText: { color: '#FF9800', fontSize: 14, fontWeight: '600' },
+  descText: { color: '#B0B0B0', fontSize: 13, lineHeight: 18 },
+  tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 },
+  tagChip: { backgroundColor: '#2C2C2E', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4 },
+  tagChipT: { color: '#8E8EFF', fontSize: 11, fontWeight: '600', textTransform: 'capitalize' },
 
   /* actions */
   actions: { flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: 8, paddingVertical: 20 },
