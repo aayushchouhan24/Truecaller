@@ -1,0 +1,63 @@
+# Example Terraform Variables
+# Copy this file to terraform.tfvars and update with your values
+
+# General Configuration
+aws_region  = "eu-central-1"
+app_name    = "truecaller-backend"
+environment = "production"
+
+# VPC Configuration
+vpc_cidr             = "10.0.0.0/16"
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
+
+# Optionally specify availability zones (uses first 2 AZs if not specified)
+# availability_zones = ["eu-central-1a", "eu-central-1b"]
+
+# Container Configuration
+container_port   = 3000
+container_cpu    = 512   # 0.5 vCPU (256, 512, 1024, 2048, 4096)
+container_memory = 1024  # 1 GB (512, 1024, 2048, 4096, 8192)
+container_image_tag = "latest"
+
+# ECS Configuration
+desired_count             = 1
+health_check_grace_period = 120  # seconds
+
+# ALB Configuration
+enable_https     = false
+certificate_arn  = ""  # Add ACM certificate ARN for HTTPS (e.g., "arn:aws:acm:region:account:certificate/xxx")
+health_check_path = "/api"
+health_check_interval           = 30
+health_check_timeout            = 5
+health_check_healthy_threshold  = 2
+health_check_unhealthy_threshold = 3
+
+# ECR Configuration
+ecr_image_tag_mutability = "MUTABLE"
+ecr_scan_on_push        = true
+ecr_lifecycle_count     = 10
+
+# CloudWatch Logs
+log_retention_days = 7  # 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, etc.
+
+# Secrets Manager - Secret Names
+# Note: Secrets will be created but values must be populated manually using AWS CLI or Console
+secret_database_url_name         = "truecaller/database-url"
+secret_redis_url_name            = "truecaller/redis-url"
+secret_jwt_secret_name           = "truecaller/jwt-secret"
+secret_firebase_credentials_name = "truecaller/firebase-credentials"
+
+# Auto Scaling (Optional)
+enable_autoscaling  = false
+min_capacity        = 1
+max_capacity        = 4
+cpu_target_value    = 70  # CPU percentage
+memory_target_value = 80  # Memory percentage
+
+# Additional Tags
+additional_tags = {
+  Team       = "Backend"
+  CostCenter = "Engineering"
+  Terraform  = "true"
+}

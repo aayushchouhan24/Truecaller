@@ -27,7 +27,7 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0:11434
     healthcheck:
-      test: ['CMD-SHELL', 'ollama list || exit 0']
+      test: [ 'CMD-SHELL', 'ollama list || exit 0' ]
       interval: 10s
       timeout: 10s
       retries: 3

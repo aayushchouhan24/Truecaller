@@ -97,4 +97,4 @@ import { HealthController } from './health.controller';
     },
   ],
 })
-export class AppModule {}
+export class AppModule { }
