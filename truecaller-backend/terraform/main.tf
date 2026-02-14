@@ -226,10 +226,10 @@ resource "aws_lb_target_group" "main" {
     path                = var.health_check_path
     protocol            = "HTTP"
     matcher             = "200-299"
-    interval            = var.health_check_interval
-    timeout             = var.health_check_timeout
-    healthy_threshold   = var.health_check_healthy_threshold
-    unhealthy_threshold = var.health_check_unhealthy_threshold
+    interval            = 60  # Check every 60 seconds (more relaxed)
+    timeout             = 10  # 10 second timeout
+    healthy_threshold   = 2   # Need 2 consecutive successes
+    unhealthy_threshold = 3   # Need 3 consecutive failures before marking unhealthy
   }
 
   deregistration_delay = 30
@@ -518,6 +518,22 @@ resource "aws_ecs_task_definition" "main" {
       {
         name  = "PORT"
         value = tostring(var.container_port)
+      },
+      {
+        name  = "OLLAMA_URL"
+        value = "http://ollama.${var.app_name}.local:${var.ollama_port}"
+      },
+      {
+        name  = "OLLAMA_MODEL"
+        value = var.ollama_model
+      },
+      {
+        name  = "OLLAMA_ENABLED"
+        value = "true"
+      },
+      {
+        name  = "OLLAMA_TIMEOUT"
+        value = "30000"
       }
     ]
 
@@ -552,9 +568,9 @@ resource "aws_ecs_task_definition" "main" {
     healthCheck = {
       command     = ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${var.container_port}${var.health_check_path} || exit 1"]
       interval    = 30
-      timeout     = 5
-      retries     = 3
-      startPeriod = 60
+      timeout     = 10
+      retries     = 5
+      startPeriod = 120  # 2 minutes - allows app to start and connect to dependencies
     }
 
     essential = true

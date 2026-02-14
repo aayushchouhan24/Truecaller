@@ -89,7 +89,7 @@ variable "min_capacity" {
 variable "health_check_grace_period" {
   description = "Seconds to wait before starting health checks"
   type        = number
-  default     = 120
+  default     = 180  # 3 minutes - allows backend to connect to Ollama
 }
 
 # ALB Configuration

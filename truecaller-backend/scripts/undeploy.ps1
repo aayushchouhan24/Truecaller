@@ -55,6 +55,84 @@ function Get-TerraformOutput {
     return $output
 }
 
+# Force cleanup VPC and dependencies
+function Invoke-ForceVPCCleanup {
+    param(
+        [string]$VpcId,
+        [string]$Region
+    )
+    
+    if (-not $VpcId -or $VpcId -eq "") {
+        Write-Warning "No VPC ID provided, skipping force cleanup"
+        return
+    }
+    
+    Write-Info "Force cleaning VPC: $VpcId"
+    
+    # Delete ENIs (Network Interfaces)
+    Write-Info "Checking for ENIs..."
+    $enis = aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VpcId" --query 'NetworkInterfaces[*].NetworkInterfaceId' --output text --region $Region 2>$null
+    if ($enis -and $enis.Trim() -ne "") {
+        Write-Info "Found ENIs, detaching and deleting..."
+        foreach ($eni in $enis.Split()) {
+            if ($eni.Trim() -ne "") {
+                # Detach if attached
+                $attachment = aws ec2 describe-network-interfaces --network-interface-ids $eni --query 'NetworkInterfaces[0].Attachment.AttachmentId' --output text --region $Region 2>$null
+                if ($attachment -and $attachment -ne "None" -and $attachment.Trim() -ne "") {
+                    aws ec2 detach-network-interface --attachment-id $attachment --force --region $Region --no-cli-pager 2>$null | Out-Null
+                    Start-Sleep -Seconds 3
+                }
+                
+                # Delete ENI
+                aws ec2 delete-network-interface --network-interface-id $eni --region $Region --no-cli-pager 2>$null | Out-Null
+            }
+        }
+        Start-Sleep -Seconds 5
+    }
+    
+    # Delete NAT Gateways
+    Write-Info "Checking for NAT Gateways..."
+    $natGateways = aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VpcId" --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text --region $Region 2>$null
+    if ($natGateways -and $natGateways.Trim() -ne "") {
+        Write-Info "Deleting NAT Gateways..."
+        foreach ($nat in $natGateways.Split()) {
+            if ($nat.Trim() -ne "") {
+                aws ec2 delete-nat-gateway --nat-gateway-id $nat --region $Region --no-cli-pager 2>$null | Out-Null
+            }
+        }
+        Write-Info "Waiting 30 seconds for NAT Gateways..."
+        Start-Sleep -Seconds 30
+    }
+    
+    # Delete Load Balancers
+    Write-Info "Checking for Load Balancers..."
+    $albs = aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$VpcId'].LoadBalancerArn" --output text --region $Region 2>$null
+    if ($albs -and $albs.Trim() -ne "") {
+        Write-Info "Deleting Load Balancers..."
+        foreach ($alb in $albs.Split()) {
+            if ($alb.Trim() -ne "") {
+                aws elbv2 delete-load-balancer --load-balancer-arn $alb --region $Region --no-cli-pager 2>$null | Out-Null
+            }
+        }
+        Write-Info "Waiting 45 seconds for Load Balancers..."
+        Start-Sleep -Seconds 45
+    }
+    
+    # Delete Internet Gateway
+    Write-Info "Checking for Internet Gateways..."
+    $igws = aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VpcId" --query 'InternetGateways[*].InternetGatewayId' --output text --region $Region 2>$null
+    if ($igws -and $igws.Trim() -ne "") {
+        foreach ($igw in $igws.Split()) {
+            if ($igw.Trim() -ne "") {
+                aws ec2 detach-internet-gateway --internet-gateway-id $igw --vpc-id $VpcId --region $Region --no-cli-pager 2>$null | Out-Null
+                aws ec2 delete-internet-gateway --internet-gateway-id $igw --region $Region --no-cli-pager 2>$null | Out-Null
+            }
+        }
+    }
+    
+    Write-Success "Force cleanup completed"
+}
+
 # Show what will be destroyed
 function Show-DestructionPlan {
     Write-Host ""
@@ -156,33 +234,51 @@ function Start-Undeploy {
         exit 0
     }
     
-    # Step 1: Clean up ECR repository (force delete with all images)
-    Write-Info "Cleaning up ECR repository..."
-    $ECR_REPO = "truecaller-backend"
-    $AWS_REGION = Get-TerraformOutput "aws_region"
+    # Step 1: Clean up ECR repositories (force delete with all images)
+    Write-Host ""
+    Write-Info "Step 1: Cleaning up ECR repositories..."
     
+    $AWS_REGION = Get-TerraformOutput "aws_region"
     if (-not $AWS_REGION) {
         $AWS_REGION = "eu-central-1"
     }
     
+    # Delete Backend ECR Repository
+    $ECR_BACKEND = "truecaller-backend"
     try {
-        Write-Info "Checking if ECR repository exists..."
-        $null = aws ecr describe-repositories --repository-name $ECR_REPO --region $AWS_REGION 2>$null
-        
+        $null = aws ecr describe-repositories --repository-name $ECR_BACKEND --region $AWS_REGION 2>$null
         if ($LASTEXITCODE -eq 0) {
-            Write-Info "Force deleting ECR repository with all images..."
-            aws ecr delete-repository --repository-name $ECR_REPO --region $AWS_REGION --force 2>$null | Out-Null
+            Write-Info "Force deleting Backend ECR repository with all images..."
+            aws ecr delete-repository --repository-name $ECR_BACKEND --region $AWS_REGION --force 2>$null | Out-Null
             if ($LASTEXITCODE -eq 0) {
-                Write-Success "ECR repository deleted"
+                Write-Success "Backend ECR repository deleted"
             } else {
-                Write-Warning "Failed to delete ECR repository (may require manual cleanup)"
+                Write-Warning "Failed to delete Backend ECR repository"
             }
         } else {
-            Write-Info "ECR repository does not exist or already deleted"
+            Write-Info "Backend ECR repository does not exist"
         }
+    } catch {
+        Write-Warning "Could not check/delete Backend ECR repository"
     }
-    catch {
-        Write-Warning "Could not check/delete ECR repository"
+    
+    # Delete Ollama ECR Repository
+    $ECR_OLLAMA = "truecaller-backend-ollama"
+    try {
+        $null = aws ecr describe-repositories --repository-name $ECR_OLLAMA --region $AWS_REGION 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Info "Force deleting Ollama ECR repository with all images..."
+            aws ecr delete-repository --repository-name $ECR_OLLAMA --region $AWS_REGION --force 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "Ollama ECR repository deleted"
+            } else {
+                Write-Warning "Failed to delete Ollama ECR repository"
+            }
+        } else {
+            Write-Info "Ollama ECR repository does not exist"
+        }
+    } catch {
+        Write-Warning "Could not check/delete Ollama ECR repository"
     }
     
     # Step 2: Create destroy plan
@@ -197,27 +293,133 @@ function Start-Undeploy {
     Pop-Location
     Write-Success "Destruction plan created"
     
-    # Step 3: Apply destruction
+    # Step 3: Pre-cleanup resources that might block destruction
+    Write-Host ""
+    Write-Info "Pre-cleaning resources that might block Terraform destroy..."
+    
+    $AWS_REGION = Get-TerraformOutput "aws_region"
+    if (-not $AWS_REGION) {
+        $AWS_REGION = "eu-central-1"
+    }
+    
+    # Stop all ECS tasks first
+    $CLUSTER_NAME = Get-TerraformOutput "ecs_cluster_name"
+    if ($CLUSTER_NAME) {
+        Write-Info "Stopping ECS tasks..."
+        try {
+            $tasksJson = aws ecs list-tasks --cluster $CLUSTER_NAME --region $AWS_REGION --query 'taskArns[*]' --output json 2>$null
+            if ($LASTEXITCODE -eq 0 -and $tasksJson) {
+                $tasks = $tasksJson | ConvertFrom-Json
+                if ($tasks -and $tasks.Count -gt 0) {
+                    Write-Info "Found $($tasks.Count) task(s) to stop..."
+                    foreach ($task in $tasks) {
+                        aws ecs stop-task --cluster $CLUSTER_NAME --task $task --region $AWS_REGION 2>$null | Out-Null
+                    }
+                    Write-Info "Waiting 20 seconds for tasks to stop..."
+                    Start-Sleep -Seconds 20
+                } else {
+                    Write-Info "No running tasks found"
+                }
+            }
+        } catch {
+            Write-Warning "Could not stop ECS tasks (may already be stopped)"
+        }
+        
+        # Scale services to 0
+        Write-Info "Scaling services to 0..."
+        try {
+            $BACKEND_SERVICE = Get-TerraformOutput "ecs_service_name"
+            $OLLAMA_SERVICE = Get-TerraformOutput "ollama_service_name"
+            
+            if ($BACKEND_SERVICE) {
+                aws ecs update-service --cluster $CLUSTER_NAME --service $BACKEND_SERVICE --desired-count 0 --region $AWS_REGION 2>$null | Out-Null
+            }
+            if ($OLLAMA_SERVICE) {
+                aws ecs update-service --cluster $CLUSTER_NAME --service $OLLAMA_SERVICE --desired-count 0 --region $AWS_REGION 2>$null | Out-Null
+            }
+            Start-Sleep -Seconds 10
+        } catch {
+            Write-Warning "Could not scale services (may already be stopped)"
+        }
+    } else {
+        Write-Info "No ECS cluster found (infrastructure may be partially destroyed)"
+    }
+    
+    # Step 4: Apply destruction with timeout
     Write-Host ""
     Write-Info "Destroying infrastructure (this takes 3-5 minutes)..."
     Write-Host ""
     
     Push-Location terraform
-    terraform apply destroy.tfplan
-    $destroyExitCode = $LASTEXITCODE
+    
+    # Start terraform destroy as background job with timeout
+    $destroyJob = Start-Job -ScriptBlock {
+        param($tfPath)
+        Set-Location $tfPath
+        terraform apply destroy.tfplan 2>&1
+        return $LASTEXITCODE
+    } -ArgumentList (Get-Location).Path
+    
+    # Wait for job with timeout (15 minutes)
+    $timeout = 900
+    $elapsed = 0
+    $checkInterval = 10
+    
+    Write-Info "Monitoring destruction (timeout: 15 minutes)..."
+    while ($destroyJob.State -eq 'Running' -and $elapsed -lt $timeout) {
+        Start-Sleep -Seconds $checkInterval
+        $elapsed += $checkInterval
+        
+        if ($elapsed % 60 -eq 0) {
+            Write-Host "  Progress: $([int]($elapsed/60)) minute(s) elapsed..." -ForegroundColor Gray
+        }
+    }
+    
+    if ($destroyJob.State -eq 'Running') {
+        Write-Warning "Terraform destroy timed out after $([int]($timeout/60)) minutes!"
+        Write-Info "Stopping terraform process..."
+        Stop-Job $destroyJob -PassThru | Remove-Job -Force
+        
+        # Force cleanup stuck resources
+        Write-Warning "Attempting force cleanup of stuck resources..."
+        Pop-Location
+        
+        # Get VPC ID before cleanup
+        $VPC_ID = Get-TerraformOutput "vpc_id"
+        
+        # Call force cleanup function
+        Invoke-ForceVPCCleanup -VpcId $VPC_ID -Region $AWS_REGION
+        
+        Push-Location terraform
+        
+        # Try destroy again after force cleanup
+        Write-Info "Retrying terraform destroy..."
+        terraform destroy -auto-approve
+        $destroyExitCode = $LASTEXITCODE
+    } else {
+        # Job completed normally
+        $destroyExitCode = Receive-Job $destroyJob
+        Remove-Job $destroyJob
+    }
+    
     Remove-Item destroy.tfplan -ErrorAction SilentlyContinue
     Pop-Location
     
-    # If destruction failed (likely due to ECR not being empty), complete it
+    # If destruction failed, try auto-approve
     if ($destroyExitCode -ne 0) {
-        Write-Warning "Initial destruction encountered an issue (likely ECR repository not empty)"
-        Write-Info "Completing destruction with auto-approve..."
+        Write-Warning "Initial destruction encountered issues"
+        Write-Info "Attempting force destroy..."
         
         Push-Location terraform
         terraform destroy -auto-approve
         if ($LASTEXITCODE -ne 0) {
-            Write-Error "Destruction failed"
+            Write-Error "Terraform destroy failed. Manual cleanup may be required."
             Pop-Location
+            
+            # Show manual cleanup instructions
+            Write-Host ""
+            Write-Warning "Manual cleanup required. Run:"
+            Write-Host "  .\scripts\force-cleanup-vpc.ps1" -ForegroundColor Cyan
             exit 1
         }
         Pop-Location
@@ -225,10 +427,12 @@ function Start-Undeploy {
     
     Write-Success "Infrastructure destroyed successfully"
     
-    # Step 3.5: Force cleanup any remaining resources
+    # Step 5: Force cleanup any remaining resources
     Write-Host ""
     Write-Info "Checking for any remaining AWS resources..."
-    $AWS_REGION = "eu-central-1"
+    if (-not $AWS_REGION) {
+        $AWS_REGION = "eu-central-1"
+    }
     
     # Clean up Load Balancers
     Write-Info "Checking for leftover load balancers..."
@@ -304,7 +508,7 @@ function Start-Undeploy {
     
     Write-Success "Resource cleanup completed"
     
-    # Step 4: Clean up deployment files
+    # Step 6: Clean up deployment files
     Write-Info "Cleaning up temporary files..."
     if (Test-Path "terraform\destroy.tfplan") {
         Remove-Item "terraform\destroy.tfplan" -ErrorAction SilentlyContinue
@@ -313,10 +517,12 @@ function Start-Undeploy {
         Remove-Item "terraform\deployment.tfplan" -ErrorAction SilentlyContinue
     }
     
-    # Step 5: Check and handle secrets
+    # Step 7: Check and handle secrets
     Write-Host ""
     Write-Info "Checking secrets status..."
-    $AWS_REGION = "eu-central-1"  # Default region
+    if (-not $AWS_REGION) {
+        $AWS_REGION = "eu-central-1"  # Default region
+    }
     
     $secrets = @(
         "truecaller/database-url",
@@ -371,7 +577,7 @@ function Start-Undeploy {
         Write-Info "All secrets already deleted"
     }
     
-    # Step 6: Final Summary
+    # Step 8: Final Summary
     Write-Host ""
     Write-Host "==========================================" -ForegroundColor Green
     Write-Host "  UNDEPLOY COMPLETED" -ForegroundColor Green

@@ -1,0 +1,27 @@
+FROM ollama/ollama:latest
+
+# Install curl for health checks
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Pre-pull the Llama 3.2 1B model during build to reduce startup time
+# This adds ~1.3GB to image size but saves 60-90s on cold starts
+ARG MODEL_NAME=llama3.2:1b
+
+# Start Ollama server in background, pull the model, then stop
+RUN nohup bash -c "ollama serve &" && \
+  sleep 5 && \
+  ollama pull ${MODEL_NAME} && \
+  sleep 2 && \
+  pkill ollama
+
+# Optimize for CPU-only inference
+ENV OLLAMA_NUM_PARALLEL=2 \
+  OLLAMA_MAX_LOADED_MODELS=1 \
+  OLLAMA_KEEP_ALIVE=5m \
+  OLLAMA_HOST=0.0.0.0:11434
+
+EXPOSE 11434
+
+# Use the default Ollama entrypoint
+ENTRYPOINT ["ollama"]
+CMD ["serve"]

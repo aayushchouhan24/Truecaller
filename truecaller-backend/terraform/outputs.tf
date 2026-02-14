@@ -181,21 +181,80 @@ output "deployment_instructions" {
        aws secretsmanager put-secret-value --secret-id ${aws_secretsmanager_secret.jwt_secret.name} --secret-string "your-random-jwt-secret"
        aws secretsmanager put-secret-value --secret-id ${aws_secretsmanager_secret.firebase_credentials.name} --secret-string file://firebase-service-account.json
     
-    2. Build and Push Docker Image:
+    2. Build and Push Docker Images:
+       # Backend
        aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${aws_ecr_repository.main.repository_url}
        docker build -t ${var.app_name} .
        docker tag ${var.app_name}:latest ${aws_ecr_repository.main.repository_url}:latest
        docker push ${aws_ecr_repository.main.repository_url}:latest
+       
+       # Ollama
+       docker build -t ${var.app_name}-ollama -f Dockerfile.ollama .
+       docker tag ${var.app_name}-ollama:latest ${aws_ecr_repository.ollama.repository_url}:latest
+       docker push ${aws_ecr_repository.ollama.repository_url}:latest
     
     3. Force New Deployment:
        aws ecs update-service --cluster ${aws_ecs_cluster.main.name} --service ${aws_ecs_service.main.name} --force-new-deployment
+       aws ecs update-service --cluster ${aws_ecs_cluster.main.name} --service ${aws_ecs_service.ollama.name} --force-new-deployment
     
     4. Access Application:
-       ${var.enable_https ? "https://${aws_lb.main.dns_name}/api" : "http://${aws_lb.main.dns_name}/api"}
+       Backend: ${var.enable_https ? "https://${aws_lb.main.dns_name}/api" : "http://${aws_lb.main.dns_name}/api"}
+       Ollama: http://ollama.${var.app_name}.local:${var.ollama_port} (internal only)
     
     5. View Logs:
        aws logs tail ${aws_cloudwatch_log_group.ecs.name} --follow
+       aws logs tail ${aws_cloudwatch_log_group.ollama.name} --follow
     
     ========================================
   EOT
 }
+
+# ============================================================
+# Ollama Service Outputs
+# ============================================================
+
+output "ollama_ecr_repository_url" {
+  description = "URL of the Ollama ECR repository"
+  value       = aws_ecr_repository.ollama.repository_url
+}
+
+output "ollama_ecr_repository_name" {
+  description = "Name of the Ollama ECR repository"
+  value       = aws_ecr_repository.ollama.name
+}
+
+output "ollama_service_name" {
+  description = "Name of the Ollama ECS service"
+  value       = aws_ecs_service.ollama.name
+}
+
+output "ollama_task_definition_family" {
+  description = "Family name of the Ollama ECS task definition"
+  value       = aws_ecs_task_definition.ollama.family
+}
+
+output "ollama_security_group_id" {
+  description = "ID of the Ollama security group"
+  value       = aws_security_group.ollama.id
+}
+
+output "ollama_service_discovery_url" {
+  description = "Internal URL for Ollama service (via Cloud Map)"
+  value       = "http://ollama.${var.app_name}.local:${var.ollama_port}"
+}
+
+output "service_discovery_namespace_id" {
+  description = "ID of the service discovery namespace"
+  value       = aws_service_discovery_private_dns_namespace.main.id
+}
+
+output "service_discovery_namespace_name" {
+  description = "Name of the service discovery namespace"
+  value       = aws_service_discovery_private_dns_namespace.main.name
+}
+
+output "ollama_cloudwatch_log_group_name" {
+  description = "Name of the Ollama CloudWatch Logs group"
+  value       = aws_cloudwatch_log_group.ollama.name
+}
+
