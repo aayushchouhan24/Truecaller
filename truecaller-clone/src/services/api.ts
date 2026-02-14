@@ -68,6 +68,9 @@ export const numbersApi = {
 
   reportSpam: (payload: ReportSpamPayload) =>
     api.post('/numbers/report-spam', payload) as Promise<ApiResponse<{ message: string; reportId: string }>>,
+
+  removeSpam: (phoneNumber: string) =>
+    api.post('/numbers/remove-spam', { phoneNumber }) as Promise<ApiResponse<{ removed: boolean; message: string }>>,
 };
 
 export const favoritesApi = {
@@ -109,6 +112,9 @@ export const usersApi = {
 
   getStats: () =>
     api.get('/users/stats') as Promise<ApiResponse<any>>,
+
+  getSpamReports: () =>
+    api.get('/users/spam-reports') as Promise<ApiResponse<{ phoneNumber: string; reason: string | null; createdAt: string; count: number }[]>>,
 
   // Placeholder methods — backend doesn't track profile views or search-by yet
   getWhoViewedMe: (_page: number) =>

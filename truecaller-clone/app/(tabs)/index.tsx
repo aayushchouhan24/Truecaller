@@ -12,6 +12,7 @@ import { callLogsService } from '../../src/services/callLogs';
 import { contactsService, type DeviceContact } from '../../src/services/contacts';
 import { numbersApi } from '../../src/services/api';
 import { callBlockingService } from '../../src/services/callBlocking';
+import { callerIdBridge } from '../../src/modules/CallerIdBridge';
 import { useAuthStore } from '../../src/store/authStore';
 import type { CallType } from '../../src/types';
 
@@ -131,7 +132,7 @@ const RecentBubble = memo(({ item, onPress }: { item: CallItem; onPress: () => v
   );
 });
 
-const ContactRow = memo(({ item, onPress }: { item: DeviceContact; onPress: () => void }) => (
+const ContactRow = memo(({ item, onPress, onCall }: { item: DeviceContact; onPress: () => void; onCall: () => void }) => (
   <TouchableOpacity style={s.callRow} onPress={onPress} activeOpacity={0.7}>
     <View style={[s.avatar, { backgroundColor: getColor(item.name) }]}>
       {item.thumbnail
@@ -142,7 +143,7 @@ const ContactRow = memo(({ item, onPress }: { item: DeviceContact; onPress: () =
       <Text style={s.callName} numberOfLines={1}>{item.name}</Text>
       {item.phoneNumbers[0] && <Text style={s.contactPhone}>{item.phoneNumbers[0]}</Text>}
     </View>
-    <TouchableOpacity onPress={() => Linking.openURL(`tel:${item.phoneNumbers[0]}`)} style={s.phoneBtn}>
+    <TouchableOpacity onPress={onCall} style={s.phoneBtn}>
       <Ionicons name="call-outline" size={20} color="#8E8E93" />
     </TouchableOpacity>
   </TouchableOpacity>
@@ -301,23 +302,35 @@ export default function CallsScreen() {
           const topFreqR = [...freqMapR.values()].sort((a, b) => b.count - a.count).slice(0, 4).map(v => v.item);
           setRecentContacts(topFreqR);
 
-          // Build "favorites" from most frequently called contacts
-          const callCountMap = new Map<string, { count: number; name: string; phone: string }>();
-          for (const c of callItems) {
-            const key = c.phoneNumber.replace(/[\s\-()]/g, '').slice(-10);
-            const existing = callCountMap.get(key);
-            if (existing) existing.count++;
-            else callCountMap.set(key, { count: 1, name: c.name || c.phoneNumber, phone: c.phoneNumber });
-          }
-          const topCalled = [...callCountMap.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 12);
-          const favs: DeviceFavorite[] = [];
-          for (const [key, val] of topCalled) {
-            const contact = dc.find(c => c.phoneNumbers.some(p => p.replace(/[\s\-()]/g, '').slice(-10) === key));
-            if (contact) {
-              favs.push({ id: contact.id, name: contact.name, phoneNumber: contact.phoneNumbers[0], thumbnail: contact.thumbnail });
+          // Build "favorites" from device-starred contacts
+          try {
+            const starred = await callerIdBridge.getStarredContacts();
+            const favs: DeviceFavorite[] = starred.map(s => ({
+              id: s.id,
+              name: s.name,
+              phoneNumber: s.phoneNumbers[0] || '',
+              thumbnail: s.thumbnail || undefined,
+            })).filter(f => f.phoneNumber);
+            setDeviceFavorites(favs);
+          } catch {
+            // Fallback: use most-called contacts if starred fetch fails
+            const callCountMap = new Map<string, { count: number; name: string; phone: string }>();
+            for (const c of callItems) {
+              const key = c.phoneNumber.replace(/[\s\-()]/g, '').slice(-10);
+              const existing = callCountMap.get(key);
+              if (existing) existing.count++;
+              else callCountMap.set(key, { count: 1, name: c.name || c.phoneNumber, phone: c.phoneNumber });
             }
+            const topCalled = [...callCountMap.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 12);
+            const favs: DeviceFavorite[] = [];
+            for (const [key, val] of topCalled) {
+              const contact = dc.find(c => c.phoneNumbers.some(p => p.replace(/[\s\-()]/g, '').slice(-10) === key));
+              if (contact) {
+                favs.push({ id: contact.id, name: contact.name, phoneNumber: contact.phoneNumbers[0], thumbnail: contact.thumbnail });
+              }
+            }
+            setDeviceFavorites(favs);
           }
-          setDeviceFavorites(favs);
         } catch { }
       }
     } catch (e: any) {
@@ -338,7 +351,9 @@ export default function CallsScreen() {
   const onRefresh = () => { setRefreshing(true); fetchData(true); };
 
   /* ── handlers ──────────────────────────────── */
-  const handleCall = useCallback((phone: string) => Linking.openURL(`tel:${phone}`), []);
+  const handleCall = useCallback((phone: string) => {
+    callerIdBridge.placeCall(phone);
+  }, []);
 
   const handlePressCall = useCallback((c: CallItem) => {
     router.push({ pathname: '/number-detail', params: { phone: c.phoneNumber, name: c.name || '' } });
@@ -370,7 +385,10 @@ export default function CallsScreen() {
   }, [dialNumber]);
 
   /* ── 3-dot menu options ────────────────────── */
-  const setFilter = (f: typeof callFilter) => { setMenuVisible(false); setCallFilter(prev => prev === f ? 'ALL' : f); };
+  const setFilter = (f: typeof callFilter) => { 
+    setMenuVisible(false); 
+    setCallFilter(f); 
+  };
   const menuOptions = [
     { icon: 'call-made' as const, label: callFilter === 'OUTGOING' ? '✓ Outgoing calls' : 'Outgoing calls', onPress: () => setFilter('OUTGOING') },
     { icon: 'call-received' as const, label: callFilter === 'INCOMING' ? '✓ Incoming calls' : 'Incoming calls', onPress: () => setFilter('INCOMING') },
@@ -399,22 +417,23 @@ export default function CallsScreen() {
     return Object.keys(groups).sort().map(k => ({ title: k, data: groups[k] }));
   }, [contacts]);
 
-  /* ── group call logs by phone number ───────── */
+  /* ── group CONSECUTIVE call logs (same number + same type) ── */
   const groupedCalls = useMemo<GroupedCall[]>(() => {
     const filtered = callFilter === 'ALL' ? calls
       : callFilter === 'BLOCKED' ? calls.filter(c => c.isSpam)
       : calls.filter(c => c.type === callFilter);
-    const map = new Map<string, GroupedCall>();
+    const result: GroupedCall[] = [];
     for (const c of filtered) {
       const key = c.phoneNumber.replace(/[\s\-()]/g, '').slice(-10);
-      const existing = map.get(key);
-      if (existing) {
-        existing.count++;
+      const prev = result.length > 0 ? result[result.length - 1] : null;
+      const prevKey = prev ? prev.phoneNumber.replace(/[\s\-()]/g, '').slice(-10) : null;
+      if (prev && prevKey === key && prev.type === c.type) {
+        prev.count++;
       } else {
-        map.set(key, { ...c, count: 1 });
+        result.push({ ...c, count: 1 });
       }
     }
-    return [...map.values()];
+    return result;
   }, [calls, callFilter]);
 
   /* ── RENDER ────────────────────────────────── */
@@ -462,7 +481,7 @@ export default function CallsScreen() {
             <Text style={s.filterChipText}>
               {callFilter === 'OUTGOING' ? 'Outgoing calls' : callFilter === 'INCOMING' ? 'Incoming calls' : callFilter === 'MISSED' ? 'Missed calls' : 'Blocked calls'}
             </Text>
-            <TouchableOpacity onPress={() => setCallFilter('ALL')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <TouchableOpacity onPress={() => { setCallFilter('ALL'); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Ionicons name="close-circle" size={16} color="#8E8E93" />
             </TouchableOpacity>
           </View>
@@ -526,7 +545,8 @@ export default function CallsScreen() {
           )}
           renderItem={({ item }) => (
             <ContactRow item={item}
-              onPress={() => router.push({ pathname: '/number-detail', params: { phone: item.phoneNumbers[0], name: item.name } })} />
+              onPress={() => router.push({ pathname: '/number-detail', params: { phone: item.phoneNumbers[0], name: item.name } })}
+              onCall={() => handleCall(item.phoneNumbers[0])} />
           )}
           ListEmptyComponent={
             <View style={s.center}>
@@ -554,7 +574,7 @@ export default function CallsScreen() {
             <TouchableOpacity
               style={s.favCard}
               activeOpacity={0.75}
-              onPress={() => Linking.openURL(`tel:${item.phoneNumber}`)}
+              onPress={() => handleCall(item.phoneNumber)}
             >
               <View style={[s.favAvatar, { backgroundColor: getColor(item.name) }]}>
                 {item.thumbnail
@@ -591,7 +611,7 @@ export default function CallsScreen() {
                       <Text style={s.dialContactName}>{c.name}</Text>
                       <Text style={s.dialContactPhone}>{c.phoneNumbers[0]}</Text>
                     </View>
-                    <TouchableOpacity onPress={() => Linking.openURL(`tel:${c.phoneNumbers[0]}`)}>
+                    <TouchableOpacity onPress={() => { setDialpadOpen(false); handleCall(c.phoneNumbers[0]); }}>
                       <Ionicons name="call" size={20} color="#8E8E93" />
                     </TouchableOpacity>
                   </TouchableOpacity>
@@ -616,7 +636,7 @@ export default function CallsScreen() {
             <View style={s.dialPadArea}>
               <View style={s.dialDisplayRow}>
                 <TouchableOpacity style={s.dialAddContactBtn} onPress={() => {
-                  if (dialNumber) Linking.openURL(`tel:${dialNumber}`).catch(() => { });
+                  if (dialNumber) { setDialpadOpen(false); handleCall(dialNumber); }
                 }}>
                   <MaterialIcons name="person-add" size={24} color="#8E8E93" />
                 </TouchableOpacity>
@@ -647,13 +667,13 @@ export default function CallsScreen() {
               </View>
 
               <View style={s.simRow}>
-                <TouchableOpacity style={s.simBtn} onPress={() => { if (dialNumber) Linking.openURL(`tel:${dialNumber}`); }}>
+                <TouchableOpacity style={s.simBtn} onPress={() => { if (dialNumber) { setDialpadOpen(false); handleCall(dialNumber); } }}>
                   <Ionicons name="call" size={18} color="#4CAF50" />
                   <Text style={s.simLabel}>SIM 1</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={s.simBtn} onPress={() => { if (dialNumber) Linking.openURL(`tel:${dialNumber}`); }}>
+                <TouchableOpacity style={s.simBtn} onPress={() => { if (dialNumber) { setDialpadOpen(false); handleCall(dialNumber); } }}>
                   <Ionicons name="call" size={18} color="#4CAF50" />
-                  <Text style={s.simLabel}>eSIM 1</Text>
+                  <Text style={s.simLabel}>SIM 2</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -873,4 +893,5 @@ const s = StyleSheet.create({
   },
   fabBtn: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
   fabBtnActive: { backgroundColor: '#3d3d3d', borderRadius: 14 },
+
 });

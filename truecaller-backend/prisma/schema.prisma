@@ -43,6 +43,10 @@ model NumberIdentity {
   sourceCount       Int       @default(0) @map("source_count")
   verifiedName      String?   @map("verified_name")
   verificationLevel VerificationLevel @default(NONE) @map("verification_level")
+  tags              String[]  @default([])
+  probableRole      String?   @map("probable_role")
+  description       String?
+  reasoning         String?
   lastResolvedAt    DateTime? @map("last_resolved_at")
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
@@ -169,4 +173,56 @@ model ContributionRateLimit {
   @@unique([deviceFingerprint])
   @@unique([userId])
   @@map("contribution_rate_limits")
+}
+
+// ── Token Statistics (data-driven token classification) ─────────────
+
+model TokenStatistic {
+  id               String   @id @default(uuid())
+  token            String   @unique
+  globalFrequency  Int      @default(0) @map("global_frequency")
+  numberCount      Int      @default(0) @map("number_count")
+  positionFirstPct Float    @default(0) @map("position_first_pct")
+  positionLastPct  Float    @default(0) @map("position_last_pct")
+  soloFrequency    Int      @default(0) @map("solo_frequency")
+  avgTrustWeight   Float    @default(0) @map("avg_trust_weight")
+  classifiedAs     String?  @map("classified_as")
+  nameScore        Float    @default(0) @map("name_score")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@index([token])
+  @@index([classifiedAs])
+  @@map("token_statistics")
+}
+
+// ── Name Reference (auto-learning name dictionary) ──────────────────
+
+enum NameCategory {
+  FIRST_NAME
+  LAST_NAME
+  MIDDLE_NAME
+  PREFIX
+  RELATIONSHIP
+  DESCRIPTOR
+}
+
+enum NameSource {
+  SEED        // Hardcoded seed data
+  LEARNED     // Auto-learned from data patterns
+  CONFIRMED   // Manually confirmed / verified
+}
+
+model NameReference {
+  id         String       @id @default(uuid())
+  token      String       @unique
+  category   NameCategory
+  source     NameSource   @default(SEED)
+  confidence Float        @default(1.0)
+  frequency  Int          @default(0)   // how many times seen in data
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  @@index([category])
+  @@index([source])
+  @@map("name_references")
 }

@@ -119,8 +119,8 @@ export class OllamaService implements OnModuleInit {
       stream: false,
       options: {
         temperature: opts?.temperature ?? 0.1,
-        top_p: 0.9,
-        num_predict: opts?.maxTokens ?? 256,
+        top_p: 0.95,
+        num_predict: opts?.maxTokens ?? 512,
       },
     };
 
@@ -176,30 +176,40 @@ export class OllamaService implements OnModuleInit {
     }
 
     const variantsList = nameVariants
-      .map((v, i) => `${i + 1}. "${v.name}" — saved by ${v.frequency} people, trust_weight=${v.trustWeight.toFixed(2)}, sources=[${v.sources.join(',')}]`)
+      .map((v, i) => `${i + 1}. "${v.name}" — saved by ${v.frequency} people, trust=${v.trustWeight.toFixed(2)}, sources=[${v.sources.join(',')}]`)
       .join('\n');
 
-    const prompt = `You are a caller-ID name resolver. A phone number (${phoneNumber}) has been saved with different names by different people. Analyze ALL the variants and determine the most likely REAL full name of the person.
+    const prompt = `You are an expert Indian name resolver for a caller-ID app. Given how different people saved a phone number, determine the person's REAL full name.
 
-VARIANTS:
+PHONE: ${phoneNumber}
+SAVED AS:
 ${variantsList}
 
-RULES:
-- Prefer full names over nicknames or abbreviations
-- Higher frequency + higher trust_weight = more reliable
-- Names from SELF_DECLARED or VERIFIED sources are most trustworthy
-- Ignore obviously fake/junk names (e.g. "Do Not Pick", "Spam", etc.)
-- If variants are similar (e.g. "Rahul" vs "Rahul Sharma"), prefer the more complete one
-- IMPORTANT: If one variant has a first name and another has a last name, COMBINE them into a full name
-  Example: If you see "Rahul" and "Sharma Ji" → the best name is "Rahul Sharma"
-  Example: If you see "Priya" and "Priya G" and "P Gupta" → the best name is "Priya Gupta"
-- If names are completely different, pick the one with best frequency × trust score
-- Think about what the REAL person's full name most likely is by combining evidence from ALL variants
+ANALYSIS STEPS:
+1. IGNORE junk entries: "Do Not Pick", "Spam", "Fraud", numbers, single letters, random characters
+2. IGNORE relationship terms that are NOT names: Papa, Mummy, Bhaiya, Didi, Uncle, Aunty, Sir, Madam, Boss, Bhai, Bhabhi, etc.
+3. IDENTIFY the actual name parts across ALL variants:
+   - Look for FIRST NAMES (Indian given names like Rahul, Priya, Aditya, Neha, etc.)
+   - Look for LAST NAMES / SURNAMES (like Sharma, Singh, Gupta, Kumar, Patel, Verma, etc.)
+   - "Kumar" or "Singh" appearing after a first name = middle name or last name
+4. COMBINE evidence from ALL variants to form the MOST COMPLETE full name:
+   - If variant A = "Rahul" and variant B = "Sharma Ji" → COMBINE to get "Rahul Sharma"
+   - If variant A = "Priya" and variant B = "P Gupta" → COMBINE to get "Priya Gupta"
+   - If variant A = "Amit Kumar" and variant B = "Amit" → PREFER "Amit Kumar" (more complete)
+   - If variant A = "Dr Rajesh" and variant B = "Rajesh Patel" → output "Rajesh Patel"
+5. PREFER: higher frequency + higher trust = more reliable
+6. SELF_DECLARED source is most trustworthy — the person named themselves
 
-Respond ONLY in this exact JSON format, no other text:
-{"bestName": "Full Name Here", "confidence": 85, "reasoning": "one line reason"}`;
+OUTPUT RULES:
+- Return the full name in TITLE CASE (capitalize first letter of each word)
+- Do NOT include titles (Dr, Mr, Mrs, Er), relationship terms (Bhai, Ji, Sir), or descriptors (Office, Home, New, Old)
+- The name should contain only first name + optional middle name + last name
+- confidence: 0-100 (higher if sources agree, lower if contradictory)
 
-    const raw = await this.generate(prompt, { temperature: 0.1, maxTokens: 150 });
+Respond ONLY in this exact JSON:
+{"bestName": "Full Name Here", "confidence": 85, "reasoning": "brief reason"}`;
+
+    const raw = await this.generate(prompt, { temperature: 0.05, maxTokens: 200 });
     if (!raw) return null;
 
     return this.parseJson<NameAnalysisResult>(raw, {
@@ -227,31 +237,38 @@ Respond ONLY in this exact JSON format, no other text:
     savedAsSpamByCount: number;    // how many people saved this contact with spam-like names
     nameVariants: string[];        // names people saved this number as
   }): Promise<SpamAnalysisResult | null> {
-    const prompt = `You are a spam call detector for a caller-ID app (like Truecaller). Analyze the following phone number data and determine if it is spam.
+    const prompt = `You are an expert spam call detector for an Indian caller-ID app. Analyze ALL the data below and determine spam probability.
 
 PHONE: ${data.phoneNumber}
-SPAM REPORTS: ${data.reportCount} reports from ${data.uniqueReporters} unique users
-CALL PATTERNS:
-  - Calls in last 24h: ${data.callsLast24h}
-  - Calls in last 7d: ${data.callsLast7d}
-  - Average call duration: ${data.avgCallDurationSec !== null ? data.avgCallDurationSec + 's' : 'unknown'}
-  - Short call ratio (hung up ≤3s): ${(data.shortCallRatio * 100).toFixed(1)}%
-  - Saved as spam-like name by: ${data.savedAsSpamByCount} people
-NAMES SAVED AS: ${data.nameVariants.length > 0 ? data.nameVariants.join(', ') : 'none'}
+REPORTS: ${data.reportCount} total from ${data.uniqueReporters} unique users
+ACTIVITY:
+  - Last 24h: ${data.callsLast24h} reports
+  - Last 7d: ${data.callsLast7d} reports
+  - Avg call duration: ${data.avgCallDurationSec !== null ? data.avgCallDurationSec + 's' : 'N/A'}
+  - Short call ratio (≤3s): ${(data.shortCallRatio * 100).toFixed(1)}%
+  - Named as spam by: ${data.savedAsSpamByCount} users
+SAVED NAMES: ${data.nameVariants.length > 0 ? data.nameVariants.slice(0, 10).join(', ') : 'none'}
 
-SPAM INDICATORS:
-- High report count from many unique users = very likely spam
-- High call volume (50+ calls/day) = telemarketer/robocall
-- High short-call ratio (>60%) = people cutting the call immediately = spam signal
-- Names containing "spam", "fraud", "loan", "insurance" etc. = spam
-- Very short avg duration (<5s) across many calls = robocall
+SCORING GUIDE:
+- 0-20: Legitimate (personal number, real person)
+- 20-40: Low risk (maybe occasional telemarketing)
+- 40-60: Moderate risk (frequent marketing calls)
+- 60-80: High risk (aggressive telemarketer/suspected scam)
+- 80-100: Very high risk (confirmed scam/robocall pattern)
 
-Respond ONLY in this exact JSON format, no other text:
-{"spamScore": 75, "isSpam": true, "category": "telemarketer", "reasoning": "one line reason"}
+KEY SIGNALS:
+- 3+ unique reporters = strong spam signal
+- 10+ reporters = almost certainly spam
+- High short-call ratio (>50%) = people cutting immediately = spam
+- Names with "spam", "fraud", "scam", "loan", "insurance", "agent" = spam
+- Names that look like real Indian names (e.g., "Rahul Sharma") = likely legitimate
 
-Categories: telemarketer, scam, robocall, legitimate, unknown`;
+Categories: telemarketer, scam, robocall, debt-collector, survey, legitimate, unknown
 
-    const raw = await this.generate(prompt, { temperature: 0.1, maxTokens: 150 });
+Respond ONLY in JSON:
+{"spamScore": 75, "isSpam": true, "category": "telemarketer", "reasoning": "brief reason"}`;
+
+    const raw = await this.generate(prompt, { temperature: 0.05, maxTokens: 200 });
     if (!raw) return null;
 
     return this.parseJson<SpamAnalysisResult>(raw, {
@@ -277,21 +294,35 @@ Categories: telemarketer, scam, robocall, legitimate, unknown`;
     spamScore: number;
     callVolume7d: number;
   }): Promise<{ category: string; subCategory: string; confidence: number } | null> {
-    const prompt = `You are a phone number categorizer. Based on the data, determine what category this phone number belongs to.
+    const prompt = `Categorize this Indian phone number based on data.
 
 PHONE: ${data.phoneNumber}
-RESOLVED NAME: ${data.resolvedName || 'unknown'}
-SAVED AS: ${data.nameVariants.join(', ') || 'none'}
-SPAM SCORE: ${data.spamScore}
-CALL VOLUME (7 days): ${data.callVolume7d}
+NAME: ${data.resolvedName || 'unknown'}
+SAVED AS: ${data.nameVariants.slice(0, 8).join(', ') || 'none'}
+SPAM SCORE: ${data.spamScore}/10
+CALLS (7d): ${data.callVolume7d}
 
-CATEGORIES: person, business, delivery, bank, government, telemarketer, spam, unknown
-SUB-CATEGORIES (examples): friend, family, restaurant, hospital, courier, credit-card, police, election-campaign, etc.
+CATEGORIES & EXAMPLES:
+- person (friend, family, colleague, neighbor)
+- business (restaurant, shop, office, company, hotel)
+- delivery (courier, food-delivery, ecommerce, logistics)
+- bank (credit-card, loan, insurance, investment, nidhi)
+- government (police, hospital, municipal, RTI, passport)
+- telemarketer (sales, marketing, promotion, election-campaign)
+- spam (scam, fraud, phishing, robocall)
+- unknown (insufficient data)
 
-Respond ONLY in this exact JSON format:
-{"category": "business", "subCategory": "restaurant", "confidence": 80}`;
+HINTS:
+- Indian personal names → "person"
+- Company names or business keywords → "business"
+- "Swiggy", "Zomato", "Amazon", "Flipkart", "Delhivery" → "delivery"
+- "SBI", "HDFC", "axis", "ICICI", "loan" → "bank"
+- High spam score (>5) → "spam" or "telemarketer"
 
-    const raw = await this.generate(prompt, { temperature: 0.1, maxTokens: 100 });
+Respond ONLY in JSON:
+{"category": "person", "subCategory": "friend", "confidence": 80}`;
+
+    const raw = await this.generate(prompt, { temperature: 0.05, maxTokens: 100 });
     if (!raw) return null;
 
     return this.parseJson<{ category: string; subCategory: string; confidence: number }>(raw, {
@@ -305,10 +336,22 @@ Respond ONLY in this exact JSON format:
 
   private parseJson<T>(raw: string, fallback: T): T {
     try {
-      // Extract JSON from potential markdown code blocks or extra text
+      // Try to extract JSON from potential markdown code blocks, extra text, etc.
+      // First try: exact JSON block
       const jsonMatch = raw.match(/\{[\s\S]*?\}/);
       if (!jsonMatch) return fallback;
-      return JSON.parse(jsonMatch[0]) as T;
+
+      let jsonStr = jsonMatch[0];
+      // Clean common LLM artifacts: trailing commas, unquoted keys
+      jsonStr = jsonStr.replace(/,\s*}/g, '}');
+
+      const parsed = JSON.parse(jsonStr) as T;
+
+      // Validate the parsed result has at least one expected key
+      if (typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length > 0) {
+        return parsed;
+      }
+      return fallback;
     } catch {
       this.logger.debug(`Failed to parse AI response: ${raw.substring(0, 200)}`);
       return fallback;

@@ -23,4 +23,9 @@ export class UsersController {
   async getStats(@CurrentUser('id') userId: string) {
     return this.usersService.getUserStats(userId);
   }
+
+  @Get('spam-reports')
+  async getSpamReports(@CurrentUser('id') userId: string) {
+    return this.usersService.getUserSpamReports(userId);
+  }
 }

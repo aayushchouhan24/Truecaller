@@ -71,6 +71,16 @@ export class RedisService implements OnModuleDestroy {
     } catch { /* ignore */ }
   }
 
+  async flushAll(): Promise<void> {
+    if (!this.client || !this.connected) return;
+    try {
+      await this.client.flushall();
+      this.logger.log('Redis flushed — all keys cleared');
+    } catch (err) {
+      this.logger.warn(`Redis flush failed: ${err}`);
+    }
+  }
+
   getClient(): Redis | null {
     return this.client;
   }

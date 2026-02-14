@@ -4,10 +4,12 @@ import { NumbersController } from './numbers.controller';
 import { NumbersService } from './numbers.service';
 import { IdentityModule } from '../identity/identity.module';
 import { SpamModule } from '../spam/spam.module';
+import { DatabaseModule } from '../../database/database.module';
 
 @Module({
   imports: [
     BullModule.registerQueue({ name: 'numbers' }),
+    DatabaseModule,
     IdentityModule,
     SpamModule,
   ],

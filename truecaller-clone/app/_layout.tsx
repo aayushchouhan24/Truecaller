@@ -83,6 +83,8 @@ export default function RootLayout() {
         <Stack.Screen name="profile" options={{ headerShown: false, animation: 'slide_from_right' }} />
         <Stack.Screen name="who-viewed" options={{ headerShown: false, animation: 'slide_from_right' }} />
         <Stack.Screen name="who-searched" options={{ headerShown: false, animation: 'slide_from_right' }} />
+        <Stack.Screen name="contact-picker" options={{ headerShown: false, animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="sms-conversation" options={{ headerShown: false, animation: 'slide_from_right' }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
       </Stack>
       <StatusBar style="light" />
