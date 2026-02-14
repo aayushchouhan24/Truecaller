@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import axios, { AxiosRequestConfig } from 'axios';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -61,44 +62,47 @@ export class OllamaService implements OnModuleInit {
   // ── Model bootstrap ─────────────────────────────────────────────────
 
   private async ensureModel(): Promise<void> {
-    try {
-      // Check if model exists
-      const res = await this.fetchOllama('/api/tags', { method: 'GET' });
-      const data = await res.json();
-      const models: { name: string }[] = data.models || [];
-      const installed = models.some(
-        (m) => m.name === this.model || m.name.startsWith(this.model.split(':')[0]),
-      );
+    const maxRetries = 3;
+    const retryDelay = 2000; // 2 seconds between retries
 
-      if (!installed) {
-        this.logger.log(`Model "${this.model}" not found — pulling (this may take a few minutes)...`);
-        await this.pullModel();
-      } else {
-        this.logger.log(`Ollama model "${this.model}" is ready`);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Check if model exists
+        const res = await axios.get(`${this.baseUrl}/api/tags`, { timeout: this.timeout });
+        const models: { name: string }[] = res.data.models || [];
+        const installed = models.some(
+          (m) => m.name === this.model || m.name.startsWith(this.model.split(':')[0]),
+        );
+
+        if (!installed) {
+          this.logger.log(`Model "${this.model}" not found — pulling (this may take a few minutes)...`);
+          await this.pullModel();
+        } else {
+          this.logger.log(`Ollama model "${this.model}" is ready`);
+        }
+        this.ready = true;
+        return; // Success, exit retry loop
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        if (attempt < maxRetries) {
+          this.logger.warn(`Ollama connection attempt ${attempt}/${maxRetries} failed at ${this.baseUrl}: ${errorMsg}, retrying in ${retryDelay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        } else {
+          this.logger.warn(`Ollama not reachable at ${this.baseUrl} after ${maxRetries} attempts (${errorMsg}) — AI features will fall back to heuristics`);
+          this.ready = false;
+        }
       }
-      this.ready = true;
-    } catch (err) {
-      this.logger.warn(`Ollama not reachable at ${this.baseUrl} — AI features will fall back to heuristics`);
-      this.ready = false;
     }
   }
 
   private async pullModel(): Promise<void> {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10 * 60 * 1000); // 10 min for pull
-      try {
-        const res = await fetch(`${this.baseUrl}/api/pull`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: this.model, stream: false }),
-          signal: controller.signal,
-        });
-        if (!res.ok) throw new Error(`Pull failed: ${res.status}`);
-        this.logger.log(`Model "${this.model}" pulled successfully`);
-      } finally {
-        clearTimeout(timer);
-      }
+      await axios.post(
+        `${this.baseUrl}/api/pull`,
+        { name: this.model, stream: false },
+        { timeout: 10 * 60 * 1000 }, // 10 min for pull
+      );
+      this.logger.log(`Model "${this.model}" pulled successfully`);
     } catch (err) {
       this.logger.error(`Failed to pull model "${this.model}": ${err.message}`);
     }
@@ -121,18 +125,12 @@ export class OllamaService implements OnModuleInit {
     };
 
     try {
-      const res = await this.fetchOllama('/api/generate', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        this.logger.warn(`Ollama generate failed: ${res.status}`);
-        return null;
-      }
-
-      const data: OllamaGenerateResponse = await res.json();
-      return data.response?.trim() || null;
+      const res = await axios.post<OllamaGenerateResponse>(
+        `${this.baseUrl}/api/generate`,
+        body,
+        { timeout: this.timeout },
+      );
+      return res.data.response?.trim() || null;
     } catch (err) {
       this.logger.warn(`Ollama request failed: ${err.message}`);
       return null;

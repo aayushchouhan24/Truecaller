@@ -25,6 +25,17 @@ class CallerIdModule(private val reactContext: ReactApplicationContext) :
                 .putString("token", token)
                 .putBoolean("active", true)
                 .apply()
+
+            // Actually start the persistent foreground service
+            val intent = Intent(reactContext, CallerIdOverlayService::class.java).apply {
+                action = CallerIdOverlayService.ACTION_START_PERSISTENT
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                reactContext.startForegroundService(intent)
+            } else {
+                reactContext.startService(intent)
+            }
+
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("START_ERROR", e.message)
@@ -37,6 +48,18 @@ class CallerIdModule(private val reactContext: ReactApplicationContext) :
             getPrefs().edit()
                 .putBoolean("active", false)
                 .apply()
+
+            // Stop the persistent foreground service
+            val intent = Intent(reactContext, CallerIdOverlayService::class.java).apply {
+                action = CallerIdOverlayService.ACTION_STOP_PERSISTENT
+            }
+            try {
+                reactContext.startService(intent)
+            } catch (_: Exception) {
+                // Service might already be stopped
+                reactContext.stopService(Intent(reactContext, CallerIdOverlayService::class.java))
+            }
+
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("STOP_ERROR", e.message)
@@ -77,6 +100,7 @@ class CallerIdModule(private val reactContext: ReactApplicationContext) :
                 putBoolean("active", prefs.getBoolean("active", false))
                 putString("apiUrl", prefs.getString("api_url", ""))
                 putBoolean("hasToken", !prefs.getString("token", "").isNullOrEmpty())
+                putBoolean("serviceRunning", CallerIdOverlayService.isRunning)
             }
             promise.resolve(map)
         } catch (e: Exception) {

@@ -191,6 +191,7 @@ export default function CallsScreen() {
   const [dialLookingUp, setDialLookingUp] = useState(false);
   const [dialMatchedContacts, setDialMatchedContacts] = useState<DeviceContact[]>([]);
   const [menuVisible, setMenuVisible] = useState(false);
+  const [callFilter, setCallFilter] = useState<'ALL' | 'OUTGOING' | 'INCOMING' | 'MISSED' | 'BLOCKED'>('ALL');
 
   /* ── dial number lookup ─────────────────────── */
   const dialLookupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -369,12 +370,19 @@ export default function CallsScreen() {
   }, [dialNumber]);
 
   /* ── 3-dot menu options ────────────────────── */
+  const setFilter = (f: typeof callFilter) => { setMenuVisible(false); setCallFilter(prev => prev === f ? 'ALL' : f); };
   const menuOptions = [
-    { icon: 'call-made' as const, label: 'Outgoing calls', onPress: () => setMenuVisible(false) },
-    { icon: 'call-received' as const, label: 'Incoming calls', onPress: () => setMenuVisible(false) },
-    { icon: 'call-missed' as const, label: 'Missed calls', onPress: () => setMenuVisible(false) },
-    { icon: 'block' as const, label: 'Blocked calls', onPress: () => setMenuVisible(false) },
-    { icon: 'delete' as const, label: 'Delete all calls', onPress: () => { setMenuVisible(false); Alert.alert('Delete All', 'Delete all call history?', [{ text: 'Cancel' }, { text: 'Delete', style: 'destructive' }]); } },
+    { icon: 'call-made' as const, label: callFilter === 'OUTGOING' ? '✓ Outgoing calls' : 'Outgoing calls', onPress: () => setFilter('OUTGOING') },
+    { icon: 'call-received' as const, label: callFilter === 'INCOMING' ? '✓ Incoming calls' : 'Incoming calls', onPress: () => setFilter('INCOMING') },
+    { icon: 'call-missed' as const, label: callFilter === 'MISSED' ? '✓ Missed calls' : 'Missed calls', onPress: () => setFilter('MISSED') },
+    { icon: 'block' as const, label: callFilter === 'BLOCKED' ? '✓ Blocked calls' : 'Blocked calls', onPress: () => setFilter('BLOCKED') },
+    { icon: 'delete' as const, label: 'Delete all calls', onPress: () => {
+      setMenuVisible(false);
+      Alert.alert('Delete All', 'Clear all call history from this view?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => { setCalls([]); setRecentContacts([]); } },
+      ]);
+    }},
     { icon: 'sim-card' as const, label: 'Set default SIM', onPress: () => { setMenuVisible(false); Linking.openSettings(); } },
     { icon: 'settings' as const, label: 'Settings', onPress: () => { setMenuVisible(false); router.push('/settings'); } },
     { icon: 'phone' as const, label: 'Set as default phone app', onPress: () => { setMenuVisible(false); Linking.openSettings(); } },
@@ -393,8 +401,11 @@ export default function CallsScreen() {
 
   /* ── group call logs by phone number ───────── */
   const groupedCalls = useMemo<GroupedCall[]>(() => {
+    const filtered = callFilter === 'ALL' ? calls
+      : callFilter === 'BLOCKED' ? calls.filter(c => c.isSpam)
+      : calls.filter(c => c.type === callFilter);
     const map = new Map<string, GroupedCall>();
-    for (const c of calls) {
+    for (const c of filtered) {
       const key = c.phoneNumber.replace(/[\s\-()]/g, '').slice(-10);
       const existing = map.get(key);
       if (existing) {
@@ -404,7 +415,7 @@ export default function CallsScreen() {
       }
     }
     return [...map.values()];
-  }, [calls]);
+  }, [calls, callFilter]);
 
   /* ── RENDER ────────────────────────────────── */
   return (
@@ -444,12 +455,27 @@ export default function CallsScreen() {
         </TouchableOpacity>
       </Modal>
 
+      {/* ── Active Filter Chip ──────────────── */}
+      {callFilter !== 'ALL' && (
+        <View style={s.filterChipRow}>
+          <View style={s.filterChip}>
+            <Text style={s.filterChipText}>
+              {callFilter === 'OUTGOING' ? 'Outgoing calls' : callFilter === 'INCOMING' ? 'Incoming calls' : callFilter === 'MISSED' ? 'Missed calls' : 'Blocked calls'}
+            </Text>
+            <TouchableOpacity onPress={() => setCallFilter('ALL')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-circle" size={16} color="#8E8E93" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* ── Content ─────────────────────────── */}
       {loading ? (
         <View style={s.center}><ActivityIndicator size="large" color="#2196F3" /></View>
       ) : subView === 'recent' ? (
         /* ──────── RECENT CALLS ──────── */
         <FlatList
+          key="recent-list"
           data={groupedCalls}
           keyExtractor={c => c.id}
           contentContainerStyle={{ paddingBottom: 140 }}
@@ -484,6 +510,7 @@ export default function CallsScreen() {
       ) : subView === 'contacts' ? (
         /* ──────── CONTACTS ──────── */
         <SectionList
+          key="contacts-list"
           sections={contactSections}
           keyExtractor={(c, i) => c.id + i}
           contentContainerStyle={{ paddingBottom: 140 }}
@@ -516,33 +543,32 @@ export default function CallsScreen() {
 
       ) : (
         /* ──────── FAVORITES (device contacts) ──────── */
-        <ScrollView contentContainerStyle={s.favGrid}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2196F3" colors={['#2196F3']} />}>
-          {deviceFavorites.length === 0 ? (
-            <View style={s.center}>
-              <Ionicons name="heart-outline" size={56} color="#2C2C2E" />
-              <Text style={s.emptyT}>No favorites</Text>
-              <Text style={s.emptySubT}>Your most-called contacts appear here</Text>
-            </View>
-          ) : (
-            <View style={s.favWrap}>
-              {deviceFavorites.map(f => (
-                <TouchableOpacity
-                  key={f.id}
-                  style={s.favCard}
-                  onPress={() => Linking.openURL(`tel:${f.phoneNumber}`)}
-                  activeOpacity={0.7}>
-                  <View style={[s.favAvatar, { backgroundColor: getColor(f.name) }]}>
-                    {f.thumbnail
-                      ? <Image source={{ uri: f.thumbnail }} style={s.favAvatarImg} />
-                      : <Text style={s.favAvatarT}>{getInitials(f.name)}</Text>}
-                  </View>
-                  <Text style={s.favName} numberOfLines={2}>{f.name}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+        <FlatList
+          key="favorites-grid"
+          data={deviceFavorites}
+          keyExtractor={item => item.id.toString()}
+          numColumns={3}
+          contentContainerStyle={s.favGrid}
+          columnWrapperStyle={s.row}
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              style={s.favCard}
+              activeOpacity={0.75}
+              onPress={() => Linking.openURL(`tel:${item.phoneNumber}`)}
+            >
+              <View style={[s.favAvatar, { backgroundColor: getColor(item.name) }]}>
+                {item.thumbnail
+                  ? <Image source={{ uri: item.thumbnail }} style={s.favAvatarImg} />
+                  : <Text style={s.favAvatarT}>{getInitials(item.name)}</Text>}
+              </View>
+
+              <Text numberOfLines={2} style={s.favName}>
+                {item.name}
+              </Text>
+            </TouchableOpacity>
           )}
-        </ScrollView>
+        />
+
       )}
 
       {/* ── Dialpad Bottom Sheet ──────────────── */}
@@ -640,17 +666,17 @@ export default function CallsScreen() {
         <View style={s.fabRow}>
           <View style={s.fabPill}>
             {([
-              { key: 'recent' as SubView, icon: 'time-outline' as const },
-              { key: 'contacts' as SubView, icon: 'person-outline' as const },
-              { key: 'favorites' as SubView, icon: 'heart-outline' as const },
+              { key: 'recent' as SubView, icon: 'time-outline' as const, activeIcon: 'time' as const },
+              { key: 'contacts' as SubView, icon: 'person-outline' as const, activeIcon: 'person' as const },
+              { key: 'favorites' as SubView, icon: 'heart-outline' as const, activeIcon: 'heart' as const },
             ]).map(b => (
               <TouchableOpacity
                 key={b.key}
                 style={[s.fabBtn, subView === b.key && s.fabBtnActive]}
                 onPress={() => setSubView(b.key)}
                 activeOpacity={0.7}>
-                <Ionicons name={b.icon} size={22}
-                  color={subView === b.key ? '#2196F3' : '#8E8E93'} />
+                <Ionicons name={subView === b.key ? b.activeIcon : b.icon} size={22} color={'#8E8E93'}
+                />
               </TouchableOpacity>
             ))}
           </View>
@@ -699,6 +725,15 @@ const s = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 14,
   },
   menuOptionText: { color: '#E0E0E0', fontSize: 15, fontWeight: '500' },
+
+  /* filter chip */
+  filterChipRow: { paddingHorizontal: 16, paddingBottom: 8, flexDirection: 'row' },
+  filterChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#1C3A5F', borderRadius: 16,
+    paddingHorizontal: 12, paddingVertical: 6,
+  },
+  filterChipText: { color: '#90CAF9', fontSize: 12, fontWeight: '600' },
 
   /* recent bubbles */
   recentScroll: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 14, gap: 20 },
@@ -750,13 +785,20 @@ const s = StyleSheet.create({
   },
 
   /* favorites grid */
-  favGrid: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 160 },
-  favWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  favCard: { alignItems: 'center', width: (SCREEN_W - 32 - 24) / 3, marginBottom: 16 },
-  favAvatar: { width: 90, height: 90, borderRadius: 45, justifyContent: 'center', alignItems: 'center', marginBottom: 8, overflow: 'hidden' },
-  favAvatarT: { color: '#FFF', fontSize: 32, fontWeight: '700' },
-  favAvatarImg: { width: 90, height: 90, borderRadius: 45 },
-  favName: { color: '#E0E0E0', fontSize: 12, textAlign: 'center', fontWeight: '500' },
+  favGrid: { paddingTop: 12, paddingBottom: 140, paddingHorizontal: 10 },
+
+  row: { justifyContent: "space-between", marginBottom: 18 },
+
+  favCard: { width: "31%", alignItems: "center" },
+
+  favAvatar: { width: 88, height: 88, borderRadius: 44, justifyContent: "center", alignItems: "center", marginBottom: 8, overflow: "hidden" },
+
+  favAvatarImg: { width: "100%", height: "100%", borderRadius: 44 },
+
+  favAvatarT: { color: "#fff", fontSize: 30, fontWeight: "700" },
+
+  favName: { color: "#E6E6E6", fontSize: 12, textAlign: "center", fontWeight: "500", lineHeight: 15 },
+
 
   /* dialpad bottom sheet */
   dialOverlay: { flex: 1, justifyContent: 'flex-end' },
@@ -812,23 +854,23 @@ const s = StyleSheet.create({
 
   /* floating action bar */
   fabRow: {
-    position: 'absolute', bottom: 68, left: 0, right: 0,
+    position: 'absolute', bottom: 15, left: 0, right: 0,
     flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 12,
   },
   fabPill: {
     flexDirection: 'row', backgroundColor: '#2C2C2E',
-    borderRadius: 30, paddingHorizontal: 6, paddingVertical: 4, gap: 2,
+    borderRadius: 15, paddingHorizontal: 6, paddingVertical: 4, gap: 2,
     elevation: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4, shadowRadius: 8,
   },
   fabDialBtn: {
-    width: 56, height: 56, borderRadius: 16,
+    width: 56, height: 56, borderRadius: 15,
     backgroundColor: '#2196F3', justifyContent: 'center', alignItems: 'center',
     elevation: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4, shadowRadius: 8,
   },
   fabBtn: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
-  fabBtnActive: { backgroundColor: '#1A3A5C', borderRadius: 14 },
+  fabBtnActive: { backgroundColor: '#3d3d3d', borderRadius: 14 },
 });

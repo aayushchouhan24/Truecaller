@@ -1,7 +1,7 @@
 import React, { useState, useCallback, memo } from 'react';
 import {
   View, Text, FlatList, StyleSheet, TouchableOpacity,
-  StatusBar, ActivityIndicator, Alert, RefreshControl, Modal, Linking,
+  StatusBar, ActivityIndicator, Alert, RefreshControl, Modal, Linking, ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -9,6 +9,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { smsService } from '../../src/services/smsReader';
 import { useAuthStore } from '../../src/store/authStore';
+import { callBlockingService } from '../../src/services/callBlocking';
 
 /* ── helpers ─────────────────────────────────────────── */
 const getColor = (n: string) => {
@@ -89,6 +90,9 @@ export default function MessagesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [permDenied, setPermDenied] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
+  const [blockListVisible, setBlockListVisible] = useState(false);
+  const [blockedNumbers, setBlockedNumbers] = useState<{ phoneNumber: string; reason: string }[]>([]);
+  const [msgFilter, setMsgFilter] = useState<'all' | 'unread'>('all');
 
   const fetchData = useCallback(async (isRefresh = false) => {
     if (!isRefresh) setLoading(true);
@@ -156,15 +160,57 @@ export default function MessagesScreen() {
 
   /* ── 3-dot menu options ────────────────────── */
   const menuOptions = [
-    { icon: 'mark-chat-read' as const, label: 'Mark all as read', onPress: () => setMenuVisible(false) },
-    { icon: 'cleaning-services' as const, label: 'Inbox Cleaner', onPress: () => setMenuVisible(false) },
-    { icon: 'star-outline' as const, label: 'Starred messages', onPress: () => setMenuVisible(false) },
-    { icon: 'archive' as const, label: 'Archived conversations', onPress: () => setMenuVisible(false) },
-    { icon: 'lock' as const, label: 'Passcode lock', onPress: () => setMenuVisible(false) },
-    { icon: 'block' as const, label: 'My block list', onPress: () => setMenuVisible(false) },
+    { icon: 'mark-chat-read' as const, label: 'Mark all as read', onPress: () => {
+      setMenuVisible(false);
+      setMsgs(prev => prev.map(m => ({ ...m, isRead: true })));
+      Alert.alert('Done', 'All messages marked as read');
+    }},
+    { icon: 'cleaning-services' as const, label: 'Inbox Cleaner', onPress: () => {
+      setMenuVisible(false);
+      const spamCount = msgs.filter(m => m.isSpam).length;
+      const promoCount = msgs.filter(m => !m.sender.startsWith('+') && !/^\d{10,}$/.test(m.sender)).length;
+      Alert.alert('Inbox Cleaner', `Found:\n• ${spamCount} spam messages\n• ${promoCount} promotional messages\n\nClean them up?`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Clean', style: 'destructive', onPress: () => {
+          setMsgs(prev => prev.filter(m => !m.isSpam));
+          Alert.alert('Cleaned', `Removed ${spamCount} spam messages`);
+        }},
+      ]);
+    }},
+    { icon: 'star-outline' as const, label: msgFilter === 'unread' ? '✓ Unread messages' : 'Unread messages', onPress: () => {
+      setMenuVisible(false);
+      setMsgFilter(prev => prev === 'unread' ? 'all' : 'unread');
+    }},
+    { icon: 'archive' as const, label: 'Archived conversations', onPress: () => {
+      setMenuVisible(false);
+      Alert.alert('Archived', 'No archived conversations yet.\n\nLong-press a conversation to archive it.');
+    }},
+    { icon: 'lock' as const, label: 'Passcode lock', onPress: () => {
+      setMenuVisible(false);
+      Alert.alert('Passcode Lock', 'Protect your messages with a passcode?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Set Up', onPress: () => router.push('/settings') },
+      ]);
+    }},
+    { icon: 'block' as const, label: 'My block list', onPress: async () => {
+      setMenuVisible(false);
+      try {
+        const blocked = await callBlockingService.getBlockedNumbers();
+        setBlockedNumbers(blocked);
+      } catch {}
+      setBlockListVisible(true);
+    }},
     { icon: 'settings' as const, label: 'Settings', onPress: () => { setMenuVisible(false); router.push('/settings'); }},
     { icon: 'sms' as const, label: 'Change default SMS app', onPress: () => { setMenuVisible(false); Linking.openSettings(); }},
   ];
+
+  const displayMsgs = msgFilter === 'unread' ? msgs.filter(m => !m.isRead) : msgs;
+
+  const handleUnblock = async (phoneNumber: string) => {
+    await callBlockingService.unblockNumber(phoneNumber);
+    const updated = await callBlockingService.getBlockedNumbers();
+    setBlockedNumbers(updated);
+  };
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
@@ -203,11 +249,23 @@ export default function MessagesScreen() {
         </TouchableOpacity>
       </Modal>
 
+      {/* ── Filter Chip ────────────────────── */}
+      {msgFilter !== 'all' && (
+        <View style={s.filterChipRow}>
+          <View style={s.filterChip}>
+            <Text style={s.filterChipText}>Unread only</Text>
+            <TouchableOpacity onPress={() => setMsgFilter('all')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-circle" size={16} color="#8E8E93" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {loading ? (
         <View style={s.center}><ActivityIndicator size="large" color="#2196F3" /></View>
       ) : (
         <FlatList
-          data={msgs}
+          data={displayMsgs}
           keyExtractor={m => m.id}
           contentContainerStyle={{ paddingBottom: 140 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2196F3" colors={['#2196F3']} />}
@@ -247,6 +305,40 @@ export default function MessagesScreen() {
       <TouchableOpacity style={s.fab} activeOpacity={0.8}>
         <Ionicons name="chatbubble" size={22} color="#FFF" />
       </TouchableOpacity>
+
+      {/* ── Block List Modal ────────────────── */}
+      <Modal visible={blockListVisible} transparent animationType="slide" onRequestClose={() => setBlockListVisible(false)}>
+        <View style={s.blockOverlay}>
+          <View style={s.blockBox}>
+            <View style={s.blockHeader}>
+              <Text style={s.blockTitle}>Blocked Numbers</Text>
+              <TouchableOpacity onPress={() => setBlockListVisible(false)}>
+                <Ionicons name="close" size={24} color="#8E8E93" />
+              </TouchableOpacity>
+            </View>
+            {blockedNumbers.length === 0 ? (
+              <View style={s.blockEmpty}>
+                <Ionicons name="checkmark-circle-outline" size={48} color="#4CAF50" />
+                <Text style={s.blockEmptyT}>No blocked numbers</Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 400 }}>
+                {blockedNumbers.map((b, i) => (
+                  <View key={i} style={s.blockRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.blockPhone}>{b.phoneNumber}</Text>
+                      {b.reason ? <Text style={s.blockReason}>{b.reason}</Text> : null}
+                    </View>
+                    <TouchableOpacity onPress={() => handleUnblock(b.phoneNumber)} style={s.unblockBtn}>
+                      <Text style={s.unblockBtnT}>Unblock</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -314,4 +406,34 @@ const s = StyleSheet.create({
     shadowOpacity: 0.3, shadowRadius: 6,
   },
 
+  /* filter chip */
+  filterChipRow: { paddingHorizontal: 16, paddingBottom: 8, flexDirection: 'row' },
+  filterChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#1C3A5F', borderRadius: 16,
+    paddingHorizontal: 12, paddingVertical: 6,
+  },
+  filterChipText: { color: '#90CAF9', fontSize: 12, fontWeight: '600' },
+
+  /* block list modal */
+  blockOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center', alignItems: 'center', padding: 24,
+  },
+  blockBox: {
+    backgroundColor: '#1C1C1E', borderRadius: 16,
+    padding: 24, width: '100%', maxWidth: 360, maxHeight: '70%',
+  },
+  blockHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  blockTitle: { color: '#FFF', fontSize: 18, fontWeight: '700', textAlign: 'center' },
+  blockEmpty: { alignItems: 'center', paddingVertical: 32 },
+  blockEmptyT: { color: '#8E8E93', fontSize: 14, marginTop: 12 },
+  blockRow: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 12,
+    borderBottomWidth: 0.5, borderBottomColor: '#1C1C1E',
+  },
+  blockPhone: { color: '#FFF', fontSize: 15 },
+  blockReason: { color: '#6B6B6B', fontSize: 12, marginTop: 2 },
+  unblockBtn: { backgroundColor: '#2C2C2E', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 6 },
+  unblockBtnT: { color: '#F44336', fontSize: 13, fontWeight: '600' },
 });

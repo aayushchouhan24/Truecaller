@@ -85,22 +85,33 @@ function withCallerId(config) {
       console.log('  ✔ Added CallReceiver to manifest');
     }
 
-    // Add CallerIdOverlayService
+    // Add CallerIdOverlayService (replace if exists to update foregroundServiceType)
     if (!app.service) app.service = [];
-    const hasService = app.service.some(
+    const serviceIdx = app.service.findIndex(
       (s) => s.$?.['android:name'] === '.CallerIdOverlayService',
     );
-    if (!hasService) {
-      app.service.push({
-        $: {
-          'android:name': '.CallerIdOverlayService',
-          'android:enabled': 'true',
-          'android:exported': 'false',
-          'android:foregroundServiceType': 'phoneCall',
+    const serviceEntry = {
+      $: {
+        'android:name': '.CallerIdOverlayService',
+        'android:enabled': 'true',
+        'android:exported': 'false',
+        'android:foregroundServiceType': 'specialUse',
+      },
+      'property': [
+        {
+          $: {
+            'android:name': 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE',
+            'android:value': 'caller_identification_overlay',
+          },
         },
-      });
-      console.log('  ✔ Added CallerIdOverlayService to manifest');
+      ],
+    };
+    if (serviceIdx >= 0) {
+      app.service[serviceIdx] = serviceEntry;
+    } else {
+      app.service.push(serviceEntry);
     }
+    console.log('  ✔ Added/updated CallerIdOverlayService in manifest');
 
     // Add BootReceiver — re-enables caller ID after device reboot
     if (!app.receiver) app.receiver = [];

@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -38,11 +39,15 @@ class CallerIdOverlayService : Service() {
         const val ACTION_CALL_ANSWERED = "com.truecallerclone.CALL_ANSWERED"
         const val ACTION_MISSED_CALL = "com.truecallerclone.MISSED_CALL"
         const val ACTION_CALL_ENDED = "com.truecallerclone.CALL_ENDED"
+        const val ACTION_START_PERSISTENT = "com.truecallerclone.START_PERSISTENT"
+        const val ACTION_STOP_PERSISTENT = "com.truecallerclone.STOP_PERSISTENT"
         const val EXTRA_PHONE_NUMBER = "phone_number"
         const val EXTRA_RING_DURATION = "ring_duration"
         const val EXTRA_CALL_DURATION = "call_duration"
         private const val CHANNEL_ID = "caller_id_channel"
         private const val FOREGROUND_NOTIFICATION_ID = 9001
+        @Volatile var isRunning = false
+            private set
 
         // Colors
         private const val BLUE_PRIMARY = "#1565C0"
@@ -87,9 +92,11 @@ class CallerIdOverlayService : Service() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         createNotificationChannel()
+        isRunning = true
     }
 
     override fun onDestroy() {
+        isRunning = false
         dismissIncomingOverlay()
         dismissAfterCallOverlay()
         executor.shutdownNow()
@@ -98,17 +105,31 @@ class CallerIdOverlayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // MUST call startForeground() within 5 seconds when started with startForegroundService()
-        // This is required on Android 8+ to keep the service alive when app is killed
         promoteToForeground()
 
-        if (!Settings.canDrawOverlays(this)) {
+        // Handle stop request
+        if (intent?.action == ACTION_STOP_PERSISTENT) {
+            isRunning = false
+            dismissIncomingOverlay()
+            dismissAfterCallOverlay()
             stopForeground(true)
             stopSelf()
             return START_NOT_STICKY
         }
 
+        // For persistent start, just keep running
+        if (intent?.action == ACTION_START_PERSISTENT) {
+            return START_STICKY
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            // Can't show overlays but keep service alive for when permission is granted
+            return START_STICKY
+        }
+
         val prefs = getSharedPreferences("caller_id", MODE_PRIVATE)
         if (!prefs.getBoolean("active", false)) {
+            isRunning = false
             stopForeground(true)
             stopSelf()
             return START_NOT_STICKY
@@ -120,7 +141,8 @@ class CallerIdOverlayService : Service() {
             ACTION_MISSED_CALL -> handleMissed(intent)
             ACTION_CALL_ENDED -> handleEnded(intent)
         }
-        return START_NOT_STICKY
+        // START_STICKY so Android restarts the service if it gets killed
+        return START_STICKY
     }
 
     // ── Action Handlers ──────────────────────────────────────
@@ -149,7 +171,7 @@ class CallerIdOverlayService : Service() {
 
     private fun handleAnswered() {
         dismissIncomingOverlay()
-        stopSelfIfIdle()
+        // Service stays alive — persistent mode
     }
 
     private fun handleMissed(intent: Intent) {
@@ -815,6 +837,12 @@ class CallerIdOverlayService : Service() {
     private fun promoteToForeground() {
         createNotificationChannel()
 
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val pendingIntent = if (launchIntent != null) {
+            PendingIntent.getActivity(this, 0, launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        } else null
+
         val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("Caller ID Active")
@@ -822,6 +850,7 @@ class CallerIdOverlayService : Service() {
                 .setSmallIcon(android.R.drawable.ic_menu_call)
                 .setOngoing(true)
                 .setCategory(Notification.CATEGORY_SERVICE)
+                .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
                 .build()
         } else {
             @Suppress("DEPRECATION")
@@ -830,20 +859,25 @@ class CallerIdOverlayService : Service() {
                 .setContentText("Identifying incoming calls")
                 .setSmallIcon(android.R.drawable.ic_menu_call)
                 .setOngoing(true)
+                .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
                 .build()
         }
 
         try {
-            startForeground(FOREGROUND_NOTIFICATION_ID, notification)
+            if (Build.VERSION.SDK_INT >= 34) {
+                // Android 14+ requires foreground service type
+                startForeground(FOREGROUND_NOTIFICATION_ID, notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(FOREGROUND_NOTIFICATION_ID, notification)
+            }
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
     private fun stopSelfIfIdle() {
-        if (incomingOverlay == null && afterCallOverlay == null) {
-            stopForeground(true)
-            stopSelf()
-        }
+        // Persistent service — do NOT stop; just dismiss overlays
+        // Service stays running for next call event
     }
 }

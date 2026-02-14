@@ -53,7 +53,6 @@ export default function ProfileScreen() {
     trustScore: 1.0, verificationLevel: 'NONE',
     profileViews: 0, searchedBy: 0,
   });
-  const [viewers, setViewers] = useState<any[]>([]);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [blockListVisible, setBlockListVisible] = useState(false);
   const [editName, setEditName] = useState(user?.name || '');
@@ -97,10 +96,6 @@ export default function ProfileScreen() {
       try {
         const res = await usersApi.getStats();
         if (res.data) setStats((prev) => ({ ...prev, ...res.data }));
-      } catch {}
-      try {
-        const res = await usersApi.getWhoViewedMe(1);
-        setViewers(res.data?.data || []);
       } catch {}
     })();
   }, []);
@@ -173,30 +168,10 @@ export default function ProfileScreen() {
             onPress={() => router.push('/(tabs)/premium')} />
           <MenuItem icon="eye-outline" iconLib="ion" label="Who viewed my profile"
             badge={stats.profileViews > 0 ? `${stats.profileViews}` : undefined}
-            onPress={() => {
-              if (viewers.length > 0) {
-                const list = viewers.slice(0, 10).map((v: any) => `• ${v.viewer?.name || 'Unknown'} (${v.viewer?.phoneNumber || ''})`).join('\n');
-                Alert.alert('Who Viewed My Profile', list);
-              } else {
-                Alert.alert('Who Viewed My Profile', 'No profile views yet');
-              }
-            }} />
+            onPress={() => router.push('/who-viewed')} />
           <MenuItem icon="search" iconLib="ion" label="Who searched for me"
             badge={stats.searchedBy > 0 ? `${stats.searchedBy}` : undefined}
-            onPress={async () => {
-              try {
-                const res = await usersApi.getWhoSearchedMe(1);
-                const items = res.data.data || [];
-                if (items.length > 0) {
-                  const list = items.slice(0, 10).map((s: any) => `• ${s.user?.name || 'Unknown'} (${s.user?.phoneNumber || ''})`).join('\n');
-                  Alert.alert('Who Searched For Me', list);
-                } else {
-                  Alert.alert('Who Searched For Me', 'No one has searched for you yet');
-                }
-              } catch {
-                Alert.alert('Who Searched For Me', 'Could not load data');
-              }
-            }} />
+            onPress={() => router.push('/who-searched')} />
           <MenuItem icon="people-outline" iconLib="ion" label="Contact requests"
             onPress={() => Alert.alert('Contact Requests', 'No pending contact requests.')} />
           <MenuItem icon="shield-checkmark-outline" iconLib="ion" label="Fraud insurance"
