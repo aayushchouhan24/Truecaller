@@ -24,6 +24,9 @@ export class NumbersProcessor extends WorkerHost {
       case 'recalculate-identity':
         await this.handleRecalculateIdentity(job.data);
         break;
+      case 'batch-resolve-identities':
+        await this.handleBatchResolveIdentities(job.data);
+        break;
       case 'update-confidence-after-spam':
         await this.handleUpdateConfidenceAfterSpam(job.data);
         break;
@@ -53,8 +56,61 @@ export class NumbersProcessor extends WorkerHost {
       this.logger.error(`Failed to recalculate identity for ${data.phoneNumber}`, error);
     }
 
-    // Invalidate cache
+    // Invalidate cache so next lookup fetches updated data
     await this.redisService.del(`lookup:${data.phoneNumber}`);
+  }
+
+  /**
+   * Batch-resolve identities for multiple phone numbers — triggered by contact sync.
+   * Runs the full intelligence pipeline for each number, persists results,
+   * and invalidates caches so next lookup returns fresh data.
+   */
+  private async handleBatchResolveIdentities(data: {
+    phoneNumbers: string[];
+    userId: string;
+  }) {
+    const { phoneNumbers, userId } = data;
+    this.logger.log(
+      `Batch resolving ${phoneNumbers.length} identities (user: ${userId})`,
+    );
+
+    const BATCH = 5; // process 5 at a time (each runs full AI pipeline)
+    let resolved = 0;
+    let failed = 0;
+
+    for (let i = 0; i < phoneNumbers.length; i += BATCH) {
+      const batch = phoneNumbers.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        batch.map(async (phone) => {
+          const profile = await this.intelligenceService.resolveIdentityProfile(phone);
+          // Invalidate lookup cache for this number
+          await this.redisService.del(`lookup:${phone}`);
+          return profile;
+        }),
+      );
+
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value.name !== 'Unknown') {
+          resolved++;
+        } else if (r.status === 'rejected') {
+          failed++;
+        }
+      }
+
+      // Log progress every 25 numbers
+      const processed = Math.min(i + BATCH, phoneNumbers.length);
+      if (processed % 25 === 0 || processed === phoneNumbers.length) {
+        this.logger.log(
+          `Batch resolve progress: ${processed}/${phoneNumbers.length} ` +
+          `(resolved=${resolved}, failed=${failed})`,
+        );
+      }
+    }
+
+    this.logger.log(
+      `Batch resolve complete: ${phoneNumbers.length} total, ` +
+      `${resolved} resolved, ${failed} failed`,
+    );
   }
 
   private async handleUpdateConfidenceAfterSpam(data: {
