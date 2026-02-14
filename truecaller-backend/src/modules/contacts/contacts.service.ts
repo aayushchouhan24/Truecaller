@@ -55,41 +55,38 @@ export class ContactsService {
       synced += batch.length;
     }
 
-    // Process name contributions AND resolve names in background
+    // Process name contributions AND resolve names synchronously
     const allPhones = normalized.map((c) => c.phoneNumber);
 
-    setImmediate(async () => {
-      try {
-        // Step 1: Add name contributions in bulk
-        const result = await this.identityService.addNameContributionsBatch(
-          normalized.map((c) => ({ phoneNumber: c.phoneNumber, name: c.name })),
-          userId,
-          'CONTACT_UPLOAD',
-          deviceFingerprint,
-        );
-        contributed = result.created;
-        this.logger.log(
-          `User ${userId}: batch contributions done — ${result.created} created, ` +
-          `${result.skipped} skipped, ${result.junk} junk`,
-        );
+    try {
+      // Step 1: Add name contributions in bulk
+      const result = await this.identityService.addNameContributionsBatch(
+        normalized.map((c) => ({ phoneNumber: c.phoneNumber, name: c.name })),
+        userId,
+        'CONTACT_UPLOAD',
+        deviceFingerprint,
+      );
+      contributed = result.created;
+      this.logger.log(
+        `User ${userId}: batch contributions done — ${result.created} created, ` +
+        `${result.skipped} skipped, ${result.junk} junk`,
+      );
 
-        // Step 2: Also resolve names for any remaining unresolved identities
-        // This catches numbers that already had identities but no resolvedName
-        const resolved = await this.identityService.bulkResolveNamesFromContacts(allPhones);
-        if (resolved > 0) {
-          this.logger.log(`User ${userId}: resolved ${resolved} additional names from contacts`);
-        }
-      } catch (error) {
-        this.logger.error(`User ${userId}: batch contribution failed`, error);
+      // Step 2: Also resolve names for any remaining unresolved identities
+      const resolved = await this.identityService.bulkResolveNamesFromContacts(allPhones);
+      if (resolved > 0) {
+        this.logger.log(`User ${userId}: resolved ${resolved} additional names from contacts`);
       }
-    });
+    } catch (error) {
+      this.logger.error(`User ${userId}: batch contribution failed`, error);
+    }
 
-    this.logger.log(`User ${userId} synced ${synced} contacts (contributions processing in background)`);
+    this.logger.log(`User ${userId} synced ${synced} contacts, contributed ${contributed} names`);
 
     return {
       success: true,
       synced,
-      contributed: 0, // will be processed async
+      contributed,
       total: contacts.length,
     };
   }

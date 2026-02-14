@@ -1,6 +1,19 @@
-import { NativeModules, Platform } from 'react-native';
+import { NativeModules, Platform, PermissionsAndroid } from 'react-native';
 
 const { CallerIdModule } = NativeModules;
+
+export interface SimInfo {
+  slotIndex: number;
+  label: string;
+  carrier: string;
+}
+
+export interface StarredContact {
+  id: string;
+  name: string;
+  thumbnail: string | null;
+  phoneNumbers: string[];
+}
 
 export const callerIdBridge = {
   /** Store API credentials and enable the caller ID overlay */
@@ -37,5 +50,42 @@ export const callerIdBridge = {
   getConfig: async (): Promise<{active: boolean; apiUrl: string; hasToken: boolean} | null> => {
     if (Platform.OS !== 'android' || !CallerIdModule) return null;
     return CallerIdModule.getConfig();
+  },
+
+  /** Get available SIM cards info */
+  getSimInfo: async (): Promise<SimInfo[]> => {
+    if (Platform.OS !== 'android' || !CallerIdModule) return [];
+    try {
+      const result = await CallerIdModule.getSimInfo();
+      return result ? Array.from(result) : [];
+    } catch {
+      return [];
+    }
+  },
+
+  /** Place a call — Android shows native SIM picker automatically */
+  placeCall: async (phoneNumber: string): Promise<boolean> => {
+    if (Platform.OS !== 'android' || !CallerIdModule) return false;
+    try {
+      const granted = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CALL_PHONE);
+      if (!granted) {
+        const res = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CALL_PHONE);
+        if (res !== PermissionsAndroid.RESULTS.GRANTED) return false;
+      }
+      return CallerIdModule.placeCall(phoneNumber);
+    } catch {
+      return false;
+    }
+  },
+
+  /** Get device-starred (favorite) contacts */
+  getStarredContacts: async (): Promise<StarredContact[]> => {
+    if (Platform.OS !== 'android' || !CallerIdModule) return [];
+    try {
+      const result = await CallerIdModule.getStarredContacts();
+      return result ? Array.from(result) : [];
+    } catch {
+      return [];
+    }
   },
 };

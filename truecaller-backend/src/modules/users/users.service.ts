@@ -55,4 +55,30 @@ export class UsersService {
       verificationLevel: user.verificationLevel,
     };
   }
+
+  async getUserSpamReports(userId: string) {
+    const reports = await this.prisma.spamReport.findMany({
+      where: { reporterId: userId },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+
+    // Group by phone number and get the latest report per number
+    const grouped = new Map<string, { phoneNumber: string; reason: string | null; createdAt: Date; count: number }>();
+    for (const r of reports) {
+      const existing = grouped.get(r.phoneNumber);
+      if (existing) {
+        existing.count++;
+      } else {
+        grouped.set(r.phoneNumber, {
+          phoneNumber: r.phoneNumber,
+          reason: r.reason,
+          createdAt: r.createdAt,
+          count: 1,
+        });
+      }
+    }
+
+    return [...grouped.values()];
+  }
 }

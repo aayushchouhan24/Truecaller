@@ -18,6 +18,12 @@ export interface LookupResult {
   isVerified: boolean;
   spamScore: number;
   isLikelySpam: boolean;
+  spamCategory?: string;
+  numberCategory?: string;
+  tags: string[];
+  probableRole: string | null;
+  description: string | null;
+  hasUserReportedSpam: boolean;
 }
 
 export interface ApiResponse<T> {

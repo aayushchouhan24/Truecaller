@@ -6,6 +6,7 @@
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo run:android",
+    "build": "cd android && gradlew.bat assembleRelease && adb install -r app\\build\\outputs\\apk\\release\\app-release.apk",
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint"

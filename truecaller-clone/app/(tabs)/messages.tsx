@@ -163,7 +163,9 @@ export default function MessagesScreen() {
     { icon: 'mark-chat-read' as const, label: 'Mark all as read', onPress: () => {
       setMenuVisible(false);
       setMsgs(prev => prev.map(m => ({ ...m, isRead: true })));
-      Alert.alert('Done', 'All messages marked as read');
+      setTimeout(() => {
+        Alert.alert('Done', 'All messages marked as read');
+      }, 100);
     }},
     { icon: 'cleaning-services' as const, label: 'Inbox Cleaner', onPress: () => {
       setMenuVisible(false);
@@ -302,7 +304,13 @@ export default function MessagesScreen() {
       )}
 
       {/* ── Compose FAB ─────────────────────── */}
-      <TouchableOpacity style={s.fab} activeOpacity={0.8}>
+      <TouchableOpacity 
+        style={s.fab} 
+        activeOpacity={0.8}
+        onPress={() => {
+          router.push('/contact-picker');
+        }}
+      >
         <Ionicons name="chatbubble" size={22} color="#FFF" />
       </TouchableOpacity>
 

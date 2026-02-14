@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
-import { IdentityService, IdentityResult } from '../identity/identity.service';
+import { IdentityService } from '../identity/identity.service';
+import { IdentityIntelligenceService } from '../identity/identity-intelligence.service';
 import { SpamService } from '../spam/spam.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -21,6 +23,10 @@ export interface LookupResult {
   isLikelySpam: boolean;
   spamCategory?: string;
   numberCategory?: string;
+  tags: string[];
+  probableRole: string | null;
+  description: string | null;
+  hasUserReportedSpam: boolean;
 }
 
 @Injectable()
@@ -28,13 +34,15 @@ export class NumbersService {
   private readonly logger = new Logger(NumbersService.name);
 
   constructor(
+    private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
     private readonly identityService: IdentityService,
+    private readonly intelligenceService: IdentityIntelligenceService,
     private readonly spamService: SpamService,
     @InjectQueue('numbers') private readonly numbersQueue: Queue,
   ) {}
 
-  async lookup(lookupDto: LookupDto): Promise<LookupResult> {
+  async lookup(lookupDto: LookupDto, userId?: string): Promise<LookupResult> {
     const phoneNumber = this.identityService.normalizePhone(lookupDto.phoneNumber);
     const cacheKey = `${CACHE_PREFIX}${phoneNumber}`;
 
@@ -42,50 +50,80 @@ export class NumbersService {
     const cached = await this.redisService.get(cacheKey);
     if (cached) {
       this.logger.debug(`Cache hit for ${phoneNumber}`);
-      return JSON.parse(cached);
+      const cachedResult: LookupResult = JSON.parse(cached);
+      // Always compute hasUserReportedSpam per-user (not cached)
+      if (userId) {
+        const userReport = await this.prisma.spamReport.findFirst({
+          where: { reporterId: userId, phoneNumber },
+        });
+        cachedResult.hasUserReportedSpam = !!userReport;
+      } else {
+        cachedResult.hasUserReportedSpam = false;
+      }
+      return cachedResult;
     }
 
-    // Resolve identity using the full pipeline
-    const identity: IdentityResult = await this.identityService.resolveIdentity(phoneNumber);
-    const spamScore = await this.spamService.getSpamScore(phoneNumber);
+    // ── New Intelligence Engine ─────────────────────────────────
+    const profile = await this.intelligenceService.resolveIdentityProfile(phoneNumber);
 
-    // Run AI-enhanced spam analysis if score is ambiguous (between 2-15)
+    // Check verified name override
+    const identity = await this.identityService.findOrCreateIdentity(phoneNumber);
+    const isVerified = !!identity.verifiedName;
+    const resolvedName = isVerified ? identity.verifiedName : (profile.name !== 'Unknown' ? profile.name : null);
+
+    // Spam analysis
+    const spamScore = await this.spamService.getSpamScore(phoneNumber);
+    const uniqueReporters = await this.spamService.getUniqueReporterCount(phoneNumber);
     let spamCategory: string | undefined;
     let finalSpamScore = spamScore;
-    let isLikelySpam = spamScore > 5;
+    // Require at least 3 unique reporters to flag as spam
+    let isLikelySpam = uniqueReporters >= 3 && spamScore > 5;
 
     if (spamScore >= 2) {
       try {
         const aiSpam = await this.spamService.analyzeSpamWithAI(phoneNumber);
-        finalSpamScore = Math.round(aiSpam.spamScore / 10); // normalize
+        finalSpamScore = Math.round(aiSpam.spamScore / 10);
         isLikelySpam = aiSpam.isSpam;
         spamCategory = aiSpam.category;
       } catch {
-        // fallback already set above
+        // fallback already set
       }
     }
 
     // AI categorization for identified numbers
     let numberCategory: string | undefined;
-    if (identity.name) {
+    if (resolvedName) {
       try {
-        const cat = await this.spamService.categorizeWithAI(phoneNumber, identity.name);
+        const cat = await this.spamService.categorizeWithAI(phoneNumber, resolvedName);
         if (cat) numberCategory = cat.category;
       } catch {
         // ignore
       }
     }
 
+    // Check if the requesting user has reported this number as spam
+    let hasUserReportedSpam = false;
+    if (userId) {
+      const userReport = await this.prisma.spamReport.findFirst({
+        where: { reporterId: userId, phoneNumber },
+      });
+      hasUserReportedSpam = !!userReport;
+    }
+
     const result: LookupResult = {
       phoneNumber,
-      name: identity.name,
-      confidence: identity.confidence,
+      name: resolvedName,
+      confidence: isVerified ? 100 : Math.round(profile.confidence * 100),
       sourceCount: identity.sourceCount,
-      isVerified: identity.isVerified,
+      isVerified,
       spamScore: finalSpamScore,
       isLikelySpam,
       spamCategory,
       numberCategory,
+      tags: profile.tags,
+      probableRole: profile.probable_role,
+      description: profile.description,
+      hasUserReportedSpam,
     };
 
     // Cache result
@@ -142,5 +180,17 @@ export class NumbersService {
 
   async backfillUnresolvedNames(): Promise<number> {
     return this.identityService.resolveAllUnresolvedNames();
+  }
+
+  async removeSpamReport(userId: string, phoneNumber: string) {
+    const normalized = this.identityService.normalizePhone(phoneNumber);
+    const result = await this.spamService.removeSpamReport(userId, normalized);
+
+    if (result.removed) {
+      // Invalidate cache
+      await this.redisService.del(`${CACHE_PREFIX}${normalized}`);
+    }
+
+    return result;
   }
 }
