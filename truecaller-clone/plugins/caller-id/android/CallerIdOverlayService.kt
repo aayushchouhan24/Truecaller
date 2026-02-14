@@ -1,7 +1,9 @@
 package com.truecallerclone.app
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -40,6 +42,7 @@ class CallerIdOverlayService : Service() {
         const val EXTRA_RING_DURATION = "ring_duration"
         const val EXTRA_CALL_DURATION = "call_duration"
         private const val CHANNEL_ID = "caller_id_channel"
+        private const val FOREGROUND_NOTIFICATION_ID = 9001
 
         // Colors
         private const val BLUE_PRIMARY = "#1565C0"
@@ -94,13 +97,19 @@ class CallerIdOverlayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // MUST call startForeground() within 5 seconds when started with startForegroundService()
+        // This is required on Android 8+ to keep the service alive when app is killed
+        promoteToForeground()
+
         if (!Settings.canDrawOverlays(this)) {
+            stopForeground(true)
             stopSelf()
             return START_NOT_STICKY
         }
 
         val prefs = getSharedPreferences("caller_id", MODE_PRIVATE)
         if (!prefs.getBoolean("active", false)) {
+            stopForeground(true)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -789,14 +798,51 @@ class CallerIdOverlayService : Service() {
             val channel = NotificationChannel(CHANNEL_ID, "Caller ID", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Shows caller identification overlays"
                 setShowBadge(false)
+                setSound(null, null)
+                enableLights(false)
+                enableVibration(false)
             }
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .createNotificationChannel(channel)
         }
     }
 
+    /**
+     * Promote this service to a foreground service with a low-priority notification.
+     * This is REQUIRED on Android 8+ when started via startForegroundService().
+     * Must be called within 5 seconds of onStartCommand.
+     */
+    private fun promoteToForeground() {
+        createNotificationChannel()
+
+        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("Caller ID Active")
+                .setContentText("Identifying incoming calls")
+                .setSmallIcon(android.R.drawable.ic_menu_call)
+                .setOngoing(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+                .setContentTitle("Caller ID Active")
+                .setContentText("Identifying incoming calls")
+                .setSmallIcon(android.R.drawable.ic_menu_call)
+                .setOngoing(true)
+                .build()
+        }
+
+        try {
+            startForeground(FOREGROUND_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     private fun stopSelfIfIdle() {
         if (incomingOverlay == null && afterCallOverlay == null) {
+            stopForeground(true)
             stopSelf()
         }
     }

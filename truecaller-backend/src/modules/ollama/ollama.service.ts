@@ -181,7 +181,7 @@ export class OllamaService implements OnModuleInit {
       .map((v, i) => `${i + 1}. "${v.name}" — saved by ${v.frequency} people, trust_weight=${v.trustWeight.toFixed(2)}, sources=[${v.sources.join(',')}]`)
       .join('\n');
 
-    const prompt = `You are a caller-ID name resolver. A phone number (${phoneNumber}) has been saved with different names by different people. Analyze the variants and determine the most likely REAL full name of the person.
+    const prompt = `You are a caller-ID name resolver. A phone number (${phoneNumber}) has been saved with different names by different people. Analyze ALL the variants and determine the most likely REAL full name of the person.
 
 VARIANTS:
 ${variantsList}
@@ -192,7 +192,11 @@ RULES:
 - Names from SELF_DECLARED or VERIFIED sources are most trustworthy
 - Ignore obviously fake/junk names (e.g. "Do Not Pick", "Spam", etc.)
 - If variants are similar (e.g. "Rahul" vs "Rahul Sharma"), prefer the more complete one
+- IMPORTANT: If one variant has a first name and another has a last name, COMBINE them into a full name
+  Example: If you see "Rahul" and "Sharma Ji" → the best name is "Rahul Sharma"
+  Example: If you see "Priya" and "Priya G" and "P Gupta" → the best name is "Priya Gupta"
 - If names are completely different, pick the one with best frequency × trust score
+- Think about what the REAL person's full name most likely is by combining evidence from ALL variants
 
 Respond ONLY in this exact JSON format, no other text:
 {"bestName": "Full Name Here", "confidence": 85, "reasoning": "one line reason"}`;
@@ -316,6 +320,17 @@ Respond ONLY in this exact JSON format:
   /** Check if AI is available and ready */
   isReady(): boolean {
     return this.enabled && this.ready;
+  }
+
+  /**
+   * Try to reconnect to Ollama if it wasn't ready at startup.
+   * Called lazily when AI features are needed.
+   */
+  async tryReconnect(): Promise<boolean> {
+    if (this.ready || !this.enabled) return this.ready;
+    this.logger.log('Attempting to reconnect to Ollama...');
+    await this.ensureModel();
+    return this.ready;
   }
 
   /** Get current status info */

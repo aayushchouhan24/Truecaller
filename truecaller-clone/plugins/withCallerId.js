@@ -35,6 +35,7 @@ function withCallerId(config) {
         'CallerIdOverlayService.kt',
         'CallerIdModule.kt',
         'CallerIdPackage.kt',
+        'BootReceiver.kt',
       ];
 
       for (const file of files) {
@@ -95,9 +96,42 @@ function withCallerId(config) {
           'android:name': '.CallerIdOverlayService',
           'android:enabled': 'true',
           'android:exported': 'false',
+          'android:foregroundServiceType': 'phoneCall',
         },
       });
       console.log('  ✔ Added CallerIdOverlayService to manifest');
+    }
+
+    // Add BootReceiver — re-enables caller ID after device reboot
+    if (!app.receiver) app.receiver = [];
+    const hasBootReceiver = app.receiver.some(
+      (r) => r.$?.['android:name'] === '.BootReceiver',
+    );
+    if (!hasBootReceiver) {
+      app.receiver.push({
+        $: {
+          'android:name': '.BootReceiver',
+          'android:enabled': 'true',
+          'android:exported': 'true',
+        },
+        'intent-filter': [
+          {
+            action: [
+              {
+                $: {
+                  'android:name': 'android.intent.action.BOOT_COMPLETED',
+                },
+              },
+              {
+                $: {
+                  'android:name': 'android.intent.action.MY_PACKAGE_REPLACED',
+                },
+              },
+            ],
+          },
+        ],
+      });
+      console.log('  ✔ Added BootReceiver to manifest');
     }
 
     return cfg;

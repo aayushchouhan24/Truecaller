@@ -1,23 +1,24 @@
+/* eslint-disable react/display-name */
 import React, { useState, useCallback, useMemo, memo, useRef, useEffect } from 'react';
 import {
   View, Text, FlatList, StyleSheet, TouchableOpacity, ScrollView,
   StatusBar, ActivityIndicator, Alert, Linking, RefreshControl,
-  SectionList, Dimensions,
+  SectionList, Dimensions, Modal, Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { callLogsService } from '../../src/services/callLogs';
 import { contactsService, type DeviceContact } from '../../src/services/contacts';
-import { favoritesApi, numbersApi } from '../../src/services/api';
+import { numbersApi } from '../../src/services/api';
 import { callBlockingService } from '../../src/services/callBlocking';
 import { useAuthStore } from '../../src/store/authStore';
-import type { Favorite, CallType } from '../../src/types';
+import type { CallType } from '../../src/types';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
 /* ── helpers ─────────────────────────────────────────── */
-const AVATAR_COLORS = ['#1B5E20','#004D40','#01579B','#4A148C','#880E4F','#E65100','#33691E','#006064','#1A237E','#3E2723'];
+const AVATAR_COLORS = ['#1B5E20', '#004D40', '#01579B', '#4A148C', '#880E4F', '#E65100', '#33691E', '#006064', '#1A237E', '#3E2723'];
 const getColor = (n: string | null) => { if (!n) return '#455A64'; let h = 0; for (let i = 0; i < n.length; i++) h = n.charCodeAt(i) + ((h << 5) - h); return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length]; };
 const getInitials = (n: string | null) => { if (!n) return '?'; const p = n.trim().split(/\s+/); return p.length > 1 ? (p[0][0] + p[p.length - 1][0]).toUpperCase() : n.slice(0, 2).toUpperCase(); };
 
@@ -38,12 +39,12 @@ function fmtTime(ts: string) {
   const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
   if (diffDays === 0) return d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
   if (diffDays === 1) return 'Yesterday';
-  if (diffDays < 7) return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
+  if (diffDays < 7) return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 }
 
 /* ── types ────────────────────────────────────────────── */
-type SubView = 'recent' | 'contacts' | 'favorites' | 'dialpad';
+type SubView = 'recent' | 'contacts' | 'favorites';
 
 interface CallItem {
   id: string;
@@ -55,6 +56,11 @@ interface CallItem {
   sim: number;
   isSpam: boolean;
   source: 'device' | 'api';
+  thumbnail?: string;
+}
+
+interface GroupedCall extends CallItem {
+  count: number;
 }
 
 /* ── memoized sub-components ──────────────────────────── */
@@ -72,13 +78,15 @@ const DirIcon = memo(({ type }: { type: CallType }) => {
 });
 
 const CallRow = memo(({ item, onPress, onCall, onLongPress }: {
-  item: CallItem; onPress: () => void; onCall: () => void; onLongPress: () => void;
+  item: GroupedCall; onPress: () => void; onCall: () => void; onLongPress: () => void;
 }) => (
   <TouchableOpacity style={s.callRow} onPress={onPress} onLongPress={onLongPress} activeOpacity={0.7}>
     <View style={[s.avatar, { backgroundColor: item.isSpam ? '#B71C1C' : getColor(item.name) }]}>
       {item.isSpam
         ? <Ionicons name="warning" size={20} color="#FFF" />
-        : <Text style={s.avatarT}>{getInitials(item.name)}</Text>}
+        : item.thumbnail
+          ? <Image source={{ uri: item.thumbnail }} style={s.avatarImg} />
+          : <Text style={s.avatarT}>{getInitials(item.name)}</Text>}
     </View>
     <View style={s.callInfo}>
       <Text style={[s.callName, item.isSpam && { color: '#F44336' }, item.type === 'MISSED' && { color: '#F44336' }]} numberOfLines={1}>
@@ -91,7 +99,7 @@ const CallRow = memo(({ item, onPress, onCall, onLongPress }: {
             <Text style={s.simText}>{item.sim}</Text>
           </View>
         )}
-        <Text style={s.callTime}>{fmtTime(item.timestamp)}</Text>
+        <Text style={s.callTime}>{fmtTime(item.timestamp)}{item.count > 1 ? ` · (${item.count})` : ''}</Text>
       </View>
     </View>
     <TouchableOpacity onPress={onCall} style={s.phoneBtn} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
@@ -106,14 +114,19 @@ const RecentBubble = memo(({ item, onPress }: { item: CallItem; onPress: () => v
     <TouchableOpacity style={s.recentBubble} onPress={onPress} activeOpacity={0.7}>
       <View style={s.recentAvatarWrap}>
         <View style={[s.recentAvatar, { backgroundColor: getColor(item.name) }]}>
-          <Text style={s.recentAvatarT}>{getInitials(item.name)}</Text>
+          {item.thumbnail
+            ? <Image source={{ uri: item.thumbnail }} style={s.recentAvatarImg} />
+            : <Text style={s.recentAvatarT}>{getInitials(item.name)}</Text>}
         </View>
         <View style={s.timeBadge}>
           <Text style={s.timeBadgeT}>{timeAgo(item.timestamp)}</Text>
         </View>
       </View>
-      <Text style={s.recentName} numberOfLines={1}>{firstName.length > 8 ? firstName.slice(0, 7) + '…' : firstName}</Text>
-      <Text style={s.recentSub}>Mobile</Text>
+      <Text style={s.recentName} numberOfLines={1}>{firstName.length > 10 ? firstName.slice(0, 9) + '…' : firstName}</Text>
+      <View style={s.recentSubRow}>
+        <Ionicons name="call" size={10} color="#5A5A5E" />
+        <Text style={s.recentSub}>Mobile</Text>
+      </View>
     </TouchableOpacity>
   );
 });
@@ -121,7 +134,9 @@ const RecentBubble = memo(({ item, onPress }: { item: CallItem; onPress: () => v
 const ContactRow = memo(({ item, onPress }: { item: DeviceContact; onPress: () => void }) => (
   <TouchableOpacity style={s.callRow} onPress={onPress} activeOpacity={0.7}>
     <View style={[s.avatar, { backgroundColor: getColor(item.name) }]}>
-      <Text style={s.avatarT}>{getInitials(item.name)}</Text>
+      {item.thumbnail
+        ? <Image source={{ uri: item.thumbnail }} style={s.avatarImg} />
+        : <Text style={s.avatarT}>{getInitials(item.name)}</Text>}
     </View>
     <View style={s.callInfo}>
       <Text style={s.callName} numberOfLines={1}>{item.name}</Text>
@@ -133,20 +148,7 @@ const ContactRow = memo(({ item, onPress }: { item: DeviceContact; onPress: () =
   </TouchableOpacity>
 ));
 
-const FavCard = memo(({ item, onLongPress }: { item: Favorite; onLongPress: () => void }) => (
-  <TouchableOpacity
-    style={s.favCard}
-    onPress={() => Linking.openURL(`tel:${item.phoneNumber}`)}
-    onLongPress={onLongPress}
-    activeOpacity={0.7}>
-    <View style={[s.favAvatar, { backgroundColor: getColor(item.name) }]}>
-      <Text style={s.favAvatarT}>{getInitials(item.name)}</Text>
-    </View>
-    <Text style={s.favName} numberOfLines={2}>{item.name}</Text>
-  </TouchableOpacity>
-));
-
-/* ── DIAL PAD ──────────────────────────────────────── */
+/* ── DIAL PAD (Truecaller style) ──────────────────── */
 const DIAL_KEYS = [
   { digit: '1', letters: '' }, { digit: '2', letters: 'ABC' }, { digit: '3', letters: 'DEF' },
   { digit: '4', letters: 'GHI' }, { digit: '5', letters: 'JKL' }, { digit: '6', letters: 'MNO' },
@@ -156,10 +158,20 @@ const DIAL_KEYS = [
 
 const DialKey = memo(({ digit, letters, onPress }: { digit: string; letters: string; onPress: () => void }) => (
   <TouchableOpacity style={s.dialKey} onPress={onPress} activeOpacity={0.5}>
-    <Text style={s.dialDigit}>{digit}</Text>
-    {letters ? <Text style={s.dialLetters}>{letters}</Text> : null}
+    <View style={s.dialKeyInner}>
+      <Text style={s.dialDigit}>{digit}</Text>
+      {letters ? <Text style={s.dialLetters}>{letters}</Text> : null}
+    </View>
   </TouchableOpacity>
 ));
+
+/* ── device favorite type ────────────────────────────── */
+interface DeviceFavorite {
+  id: string;
+  name: string;
+  phoneNumber: string;
+  thumbnail?: string;
+}
 
 /* ═══════════════════════════════════════════════════════
    MAIN CALLS SCREEN
@@ -167,13 +179,61 @@ const DialKey = memo(({ digit, letters, onPress }: { digit: string; letters: str
 export default function CallsScreen() {
   const user = useAuthStore(st => st.user);
   const [subView, setSubView] = useState<SubView>('recent');
+  const [dialpadOpen, setDialpadOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [calls, setCalls] = useState<CallItem[]>([]);
   const [recentContacts, setRecentContacts] = useState<CallItem[]>([]);
-  const [favorites, setFavorites] = useState<Favorite[]>([]);
+  const [deviceFavorites, setDeviceFavorites] = useState<DeviceFavorite[]>([]);
   const [contacts, setContacts] = useState<DeviceContact[]>([]);
   const [dialNumber, setDialNumber] = useState('');
+  const [dialLookupName, setDialLookupName] = useState<string | null>(null);
+  const [dialLookingUp, setDialLookingUp] = useState(false);
+  const [dialMatchedContacts, setDialMatchedContacts] = useState<DeviceContact[]>([]);
+  const [menuVisible, setMenuVisible] = useState(false);
+
+  /* ── dial number lookup ─────────────────────── */
+  const dialLookupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!dialNumber || dialNumber.length < 4) {
+      setDialLookupName(null);
+      setDialMatchedContacts([]);
+      return;
+    }
+
+    // Search local contacts matching dialed digits
+    const matched = contacts.filter(c =>
+      c.phoneNumbers.some(p => p.replace(/[\s\-()]/g, '').includes(dialNumber))
+    ).slice(0, 3);
+    setDialMatchedContacts(matched);
+
+    if (matched.length > 0) {
+      setDialLookupName(matched[0].name);
+    } else {
+      setDialLookupName(null);
+    }
+
+    // Debounced API lookup for numbers >= 7 digits
+    if (dialNumber.length >= 7) {
+      if (dialLookupTimer.current) clearTimeout(dialLookupTimer.current);
+      dialLookupTimer.current = setTimeout(async () => {
+        try {
+          setDialLookingUp(true);
+          const res = await numbersApi.lookup(dialNumber);
+          if (res.data?.name) {
+            setDialLookupName(res.data.name);
+          }
+        } catch { } finally {
+          setDialLookingUp(false);
+        }
+      }, 800);
+    }
+
+    return () => {
+      if (dialLookupTimer.current) clearTimeout(dialLookupTimer.current);
+    };
+  }, [dialNumber, contacts]);
 
   /* ── fetch ──────────────────────────────────── */
   const fetchData = useCallback(async (isRefresh = false) => {
@@ -197,30 +257,67 @@ export default function CallsScreen() {
       }
       setCalls(callItems);
 
-      // Recent contacts (unique by phone, max 10)
-      const seen = new Set<string>();
-      const recent: CallItem[] = [];
+      // Most frequently contacted (top 4) for header bubbles
+      const freqMap = new Map<string, { count: number; item: CallItem }>();
       for (const c of callItems) {
-        if (c.phoneNumber && !seen.has(c.phoneNumber)) {
-          seen.add(c.phoneNumber);
-          recent.push(c);
-        }
-        if (recent.length >= 10) break;
+        const fk = c.phoneNumber.replace(/[\s\-()]/g, '').slice(-10);
+        const ex = freqMap.get(fk);
+        if (ex) { ex.count++; } else { freqMap.set(fk, { count: 1, item: c }); }
       }
-      setRecentContacts(recent);
+      const topFrequent = [...freqMap.values()].sort((a, b) => b.count - a.count).slice(0, 4).map(v => v.item);
+      setRecentContacts(topFrequent);
 
-      // Favorites from API
-      try {
-        const fav = await favoritesApi.getAll();
-        setFavorites(fav.data || []);
-      } catch {}
-
-      // Device contacts
+      // Device contacts + build favorites from most-called
       if (contactsService.isAvailable) {
         try {
           const dc = await contactsService.getDeviceContacts();
           setContacts(dc);
-        } catch {}
+
+          // Build a phone→thumbnail map for fast lookup
+          const thumbMap = new Map<string, string>();
+          for (const c of dc) {
+            if (c.thumbnail) {
+              for (const p of c.phoneNumbers) {
+                thumbMap.set(p.replace(/[\s\-()]/g, '').slice(-10), c.thumbnail);
+              }
+            }
+          }
+
+          // Enrich call items with thumbnails from contacts
+          const enriched = callItems.map(ci => {
+            const key = ci.phoneNumber.replace(/[\s\-()]/g, '').slice(-10);
+            return { ...ci, thumbnail: thumbMap.get(key) };
+          });
+          setCalls(enriched);
+
+          // Rebuild top-4 frequent with thumbnails
+          const freqMapR = new Map<string, { count: number; item: CallItem }>();
+          for (const c of enriched) {
+            const fk = c.phoneNumber.replace(/[\s\-()]/g, '').slice(-10);
+            const ex = freqMapR.get(fk);
+            if (ex) { ex.count++; } else { freqMapR.set(fk, { count: 1, item: c }); }
+          }
+          const topFreqR = [...freqMapR.values()].sort((a, b) => b.count - a.count).slice(0, 4).map(v => v.item);
+          setRecentContacts(topFreqR);
+
+          // Build "favorites" from most frequently called contacts
+          const callCountMap = new Map<string, { count: number; name: string; phone: string }>();
+          for (const c of callItems) {
+            const key = c.phoneNumber.replace(/[\s\-()]/g, '').slice(-10);
+            const existing = callCountMap.get(key);
+            if (existing) existing.count++;
+            else callCountMap.set(key, { count: 1, name: c.name || c.phoneNumber, phone: c.phoneNumber });
+          }
+          const topCalled = [...callCountMap.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 12);
+          const favs: DeviceFavorite[] = [];
+          for (const [key, val] of topCalled) {
+            const contact = dc.find(c => c.phoneNumbers.some(p => p.replace(/[\s\-()]/g, '').slice(-10) === key));
+            if (contact) {
+              favs.push({ id: contact.id, name: contact.name, phoneNumber: contact.phoneNumbers[0], thumbnail: contact.thumbnail });
+            }
+          }
+          setDeviceFavorites(favs);
+        } catch { }
       }
     } catch (e: any) {
       console.warn('Calls fetch:', e.message);
@@ -249,29 +346,39 @@ export default function CallsScreen() {
   const handleLongPress = useCallback((item: CallItem) => {
     Alert.alert(item.name || item.phoneNumber, '', [
       { text: 'Call', onPress: () => handleCall(item.phoneNumber) },
-      { text: 'Add to Favorites', onPress: async () => {
-        try { await favoritesApi.add(item.phoneNumber, item.name || item.phoneNumber); fetchData(true); } catch {}
-      }},
-      { text: 'Block', style: 'destructive', onPress: async () => {
-        await callBlockingService.blockNumber(item.phoneNumber, 'Blocked by user');
-        Alert.alert('Blocked', `${item.phoneNumber} blocked`);
-        fetchData(true);
-      }},
-      { text: 'Report Spam', style: 'destructive', onPress: async () => {
-        try { await numbersApi.reportSpam({ phoneNumber: item.phoneNumber, reason: 'From call log' }); Alert.alert('Reported'); } catch {}
-      }},
+      {
+        text: 'Block', style: 'destructive', onPress: async () => {
+          await callBlockingService.blockNumber(item.phoneNumber, 'Blocked by user');
+          Alert.alert('Blocked', `${item.phoneNumber} blocked`);
+          fetchData(true);
+        }
+      },
+      {
+        text: 'Report Spam', style: 'destructive', onPress: async () => {
+          try { await numbersApi.reportSpam({ phoneNumber: item.phoneNumber, reason: 'From call log' }); Alert.alert('Reported'); } catch { }
+        }
+      },
       { text: 'Cancel', style: 'cancel' },
     ]);
   }, [handleCall, fetchData]);
 
-  const handleRemFav = useCallback(async (f: Favorite) => {
-    Alert.alert('Remove Favorite?', f.name, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: async () => {
-        try { await favoritesApi.remove(f.phoneNumber); fetchData(true); } catch {}
-      }},
-    ]);
-  }, [fetchData]);
+  const handleDialSearch = useCallback(() => {
+    if (dialNumber.length >= 4) {
+      router.push({ pathname: '/search', params: { q: dialNumber } });
+    }
+  }, [dialNumber]);
+
+  /* ── 3-dot menu options ────────────────────── */
+  const menuOptions = [
+    { icon: 'call-made' as const, label: 'Outgoing calls', onPress: () => setMenuVisible(false) },
+    { icon: 'call-received' as const, label: 'Incoming calls', onPress: () => setMenuVisible(false) },
+    { icon: 'call-missed' as const, label: 'Missed calls', onPress: () => setMenuVisible(false) },
+    { icon: 'block' as const, label: 'Blocked calls', onPress: () => setMenuVisible(false) },
+    { icon: 'delete' as const, label: 'Delete all calls', onPress: () => { setMenuVisible(false); Alert.alert('Delete All', 'Delete all call history?', [{ text: 'Cancel' }, { text: 'Delete', style: 'destructive' }]); } },
+    { icon: 'sim-card' as const, label: 'Set default SIM', onPress: () => { setMenuVisible(false); Linking.openSettings(); } },
+    { icon: 'settings' as const, label: 'Settings', onPress: () => { setMenuVisible(false); router.push('/settings'); } },
+    { icon: 'phone' as const, label: 'Set as default phone app', onPress: () => { setMenuVisible(false); Linking.openSettings(); } },
+  ];
 
   /* ── grouped contacts ──────────────────────── */
   const contactSections = useMemo(() => {
@@ -284,21 +391,58 @@ export default function CallsScreen() {
     return Object.keys(groups).sort().map(k => ({ title: k, data: groups[k] }));
   }, [contacts]);
 
+  /* ── group call logs by phone number ───────── */
+  const groupedCalls = useMemo<GroupedCall[]>(() => {
+    const map = new Map<string, GroupedCall>();
+    for (const c of calls) {
+      const key = c.phoneNumber.replace(/[\s\-()]/g, '').slice(-10);
+      const existing = map.get(key);
+      if (existing) {
+        existing.count++;
+      } else {
+        map.set(key, { ...c, count: 1 });
+      }
+    }
+    return [...map.values()];
+  }, [calls]);
+
   /* ── RENDER ────────────────────────────────── */
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <StatusBar barStyle="light-content" backgroundColor="#0A0A0A" />
 
-      {/* ── Search Bar ──────────────────────── */}
-      <TouchableOpacity style={s.searchBar} onPress={() => router.push('/search')} activeOpacity={0.8}>
-        <TouchableOpacity onPress={() => router.push('/profile')} activeOpacity={0.7}>
-          <View style={[s.searchAvatar, { backgroundColor: user?.name ? getColor(user.name) : '#2196F3' }]}>
-            <Text style={s.searchAvatarT}>{user?.name ? getInitials(user.name) : '?'}</Text>
+      {/* ── Search Bar + 3-dot menu ──────── */}
+      <View style={s.searchBarRow}>
+        <TouchableOpacity style={s.searchBar} onPress={() => router.push('/search')} activeOpacity={0.8}>
+          <TouchableOpacity onPress={() => router.push('/profile')} activeOpacity={0.7}>
+            <View style={[s.searchAvatar, { backgroundColor: user?.name ? getColor(user.name) : '#2196F3' }]}>
+              <Text style={s.searchAvatarT}>{user?.name ? getInitials(user.name) : '?'}</Text>
+            </View>
+          </TouchableOpacity>
+          <Text style={s.searchPlaceholder}>Search numbers, names & more</Text>
+          <TouchableOpacity
+            onPress={(e) => { e.stopPropagation?.(); setMenuVisible(true); }}
+            style={s.menuDotBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <MaterialIcons name="more-vert" size={22} color="#E0E0E0" />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── 3-dot Menu Modal ────────────────── */}
+      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
+        <TouchableOpacity style={s.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
+          <View style={s.menuDropdown}>
+            {menuOptions.map((opt, i) => (
+              <TouchableOpacity key={i} style={s.menuOption} onPress={opt.onPress} activeOpacity={0.7}>
+                <MaterialIcons name={opt.icon} size={20} color="#E0E0E0" />
+                <Text style={s.menuOptionText}>{opt.label}</Text>
+              </TouchableOpacity>
+            ))}
           </View>
         </TouchableOpacity>
-        <Text style={s.searchPlaceholder}>Search numbers, names & more</Text>
-        <View style={s.searchDot} />
-      </TouchableOpacity>
+      </Modal>
 
       {/* ── Content ─────────────────────────── */}
       {loading ? (
@@ -306,9 +450,9 @@ export default function CallsScreen() {
       ) : subView === 'recent' ? (
         /* ──────── RECENT CALLS ──────── */
         <FlatList
-          data={calls}
+          data={groupedCalls}
           keyExtractor={c => c.id}
-          contentContainerStyle={{ paddingBottom: 80 }}
+          contentContainerStyle={{ paddingBottom: 140 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2196F3" colors={['#2196F3']} />}
           ListHeaderComponent={recentContacts.length > 0 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.recentScroll}>
@@ -342,7 +486,7 @@ export default function CallsScreen() {
         <SectionList
           sections={contactSections}
           keyExtractor={(c, i) => c.id + i}
-          contentContainerStyle={{ paddingBottom: 80 }}
+          contentContainerStyle={{ paddingBottom: 140 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2196F3" colors={['#2196F3']} />}
           ListHeaderComponent={
             <View style={s.contactsHeader}>
@@ -370,75 +514,154 @@ export default function CallsScreen() {
           stickySectionHeadersEnabled
         />
 
-      ) : subView === 'favorites' ? (
-        /* ──────── FAVORITES ──────── */
+      ) : (
+        /* ──────── FAVORITES (device contacts) ──────── */
         <ScrollView contentContainerStyle={s.favGrid}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2196F3" colors={['#2196F3']} />}>
-          {favorites.length === 0 ? (
+          {deviceFavorites.length === 0 ? (
             <View style={s.center}>
               <Ionicons name="heart-outline" size={56} color="#2C2C2E" />
-              <Text style={s.emptyT}>No favorites yet</Text>
-              <Text style={s.emptySubT}>Long press a call to add to favorites</Text>
+              <Text style={s.emptyT}>No favorites</Text>
+              <Text style={s.emptySubT}>Your most-called contacts appear here</Text>
             </View>
           ) : (
             <View style={s.favWrap}>
-              {favorites.map(f => (
-                <FavCard key={f.id} item={f} onLongPress={() => handleRemFav(f)} />
+              {deviceFavorites.map(f => (
+                <TouchableOpacity
+                  key={f.id}
+                  style={s.favCard}
+                  onPress={() => Linking.openURL(`tel:${f.phoneNumber}`)}
+                  activeOpacity={0.7}>
+                  <View style={[s.favAvatar, { backgroundColor: getColor(f.name) }]}>
+                    {f.thumbnail
+                      ? <Image source={{ uri: f.thumbnail }} style={s.favAvatarImg} />
+                      : <Text style={s.favAvatarT}>{getInitials(f.name)}</Text>}
+                  </View>
+                  <Text style={s.favName} numberOfLines={2}>{f.name}</Text>
+                </TouchableOpacity>
               ))}
             </View>
           )}
         </ScrollView>
-
-      ) : (
-        /* ──────── DIALPAD ──────── */
-        <View style={s.dialContainer}>
-          <View style={s.dialDisplay}>
-            <Text style={[s.dialDisplayText, !dialNumber && { color: '#3A3A3C' }]}>
-              {dialNumber || 'Enter number'}
-            </Text>
-            {dialNumber.length > 0 && (
-              <TouchableOpacity onPress={() => setDialNumber(p => p.slice(0, -1))} onLongPress={() => setDialNumber('')}>
-                <Ionicons name="backspace-outline" size={24} color="#8E8E93" />
-              </TouchableOpacity>
-            )}
-          </View>
-          <View style={s.dialPad}>
-            {DIAL_KEYS.map(k => (
-              <DialKey key={k.digit} digit={k.digit} letters={k.letters}
-                onPress={() => setDialNumber(p => p + k.digit)} />
-            ))}
-          </View>
-          <View style={s.simRow}>
-            <TouchableOpacity style={s.simBtn} onPress={() => { if (dialNumber) Linking.openURL(`tel:${dialNumber}`); }}>
-              <View style={s.simIcon}><Text style={s.simIconT}>1</Text></View>
-              <Text style={s.simLabel}>SIM 1</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.simBtn} onPress={() => { if (dialNumber) Linking.openURL(`tel:${dialNumber}`); }}>
-              <View style={s.simIcon}><Text style={s.simIconT}>2</Text></View>
-              <Text style={s.simLabel}>eSIM 1</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
       )}
 
+      {/* ── Dialpad Bottom Sheet ──────────────── */}
+      <Modal visible={dialpadOpen} transparent animationType="slide" onRequestClose={() => setDialpadOpen(false)}>
+        <View style={s.dialOverlay}>
+          <TouchableOpacity style={s.dialOverlayBg} activeOpacity={1} onPress={() => setDialpadOpen(false)} />
+          <View style={s.dialSheet}>
+            {/* Contact matches */}
+            {dialMatchedContacts.length > 0 && (
+              <ScrollView style={s.dialContactsSection} keyboardShouldPersistTaps="handled">
+                <Text style={s.dialContactsLabel}>Contacts</Text>
+                {dialMatchedContacts.map((c, i) => (
+                  <TouchableOpacity key={c.id + i} style={s.dialContactRow}
+                    onPress={() => { setDialpadOpen(false); router.push({ pathname: '/number-detail', params: { phone: c.phoneNumbers[0], name: c.name } }); }}
+                    activeOpacity={0.7}>
+                    <View style={[s.dialContactAvatar, { backgroundColor: getColor(c.name) }]}>
+                      <Text style={s.dialContactAvatarT}>{getInitials(c.name)}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.dialContactName}>{c.name}</Text>
+                      <Text style={s.dialContactPhone}>{c.phoneNumbers[0]}</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => Linking.openURL(`tel:${c.phoneNumbers[0]}`)}>
+                      <Ionicons name="call" size={20} color="#8E8E93" />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity style={s.dialSearchRow} onPress={handleDialSearch}>
+                  <Ionicons name="search" size={18} color="#2196F3" />
+                  <Text style={s.dialSearchText}>SEARCH '{dialNumber}' IN TRUECALLER</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            )}
+
+            {dialNumber.length >= 4 && dialMatchedContacts.length === 0 && (
+              <View style={s.dialContactsSection}>
+                <TouchableOpacity style={s.dialSearchRow} onPress={handleDialSearch}>
+                  <Ionicons name="search" size={18} color="#2196F3" />
+                  <Text style={s.dialSearchText}>SEARCH '{dialNumber}' IN TRUECALLER</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Dial pad area */}
+            <View style={s.dialPadArea}>
+              <View style={s.dialDisplayRow}>
+                <TouchableOpacity style={s.dialAddContactBtn} onPress={() => {
+                  if (dialNumber) Linking.openURL(`tel:${dialNumber}`).catch(() => { });
+                }}>
+                  <MaterialIcons name="person-add" size={24} color="#8E8E93" />
+                </TouchableOpacity>
+                <View style={s.dialNumberDisplay}>
+                  <Text style={[s.dialDisplayText, !dialNumber && { color: '#3A3A3C' }]}>
+                    {dialNumber || ''}
+                  </Text>
+                </View>
+                {dialNumber.length > 0 && (
+                  <TouchableOpacity style={s.dialBackspaceBtn}
+                    onPress={() => setDialNumber(p => p.slice(0, -1))}
+                    onLongPress={() => setDialNumber('')}>
+                    <Ionicons name="backspace-outline" size={24} color="#8E8E93" />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {dialLookupName && (
+                <Text style={s.dialLookupName}>{dialLookupName}</Text>
+              )}
+              {dialLookingUp && <ActivityIndicator size="small" color="#2196F3" style={{ marginBottom: 4 }} />}
+
+              <View style={s.dialPad}>
+                {DIAL_KEYS.map(k => (
+                  <DialKey key={k.digit} digit={k.digit} letters={k.letters}
+                    onPress={() => setDialNumber(p => p + k.digit)} />
+                ))}
+              </View>
+
+              <View style={s.simRow}>
+                <TouchableOpacity style={s.simBtn} onPress={() => { if (dialNumber) Linking.openURL(`tel:${dialNumber}`); }}>
+                  <Ionicons name="call" size={18} color="#4CAF50" />
+                  <Text style={s.simLabel}>SIM 1</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.simBtn} onPress={() => { if (dialNumber) Linking.openURL(`tel:${dialNumber}`); }}>
+                  <Ionicons name="call" size={18} color="#4CAF50" />
+                  <Text style={s.simLabel}>eSIM 1</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── Floating Action Bar ─────────────── */}
-      <View style={s.fab}>
-        {([
-          { key: 'recent' as SubView, icon: 'time-outline' as const },
-          { key: 'contacts' as SubView, icon: 'person-outline' as const },
-          { key: 'favorites' as SubView, icon: 'heart-outline' as const },
-          { key: 'dialpad' as SubView, icon: 'keypad' as const },
-        ]).map(b => (
+      {!dialpadOpen && (
+        <View style={s.fabRow}>
+          <View style={s.fabPill}>
+            {([
+              { key: 'recent' as SubView, icon: 'time-outline' as const },
+              { key: 'contacts' as SubView, icon: 'person-outline' as const },
+              { key: 'favorites' as SubView, icon: 'heart-outline' as const },
+            ]).map(b => (
+              <TouchableOpacity
+                key={b.key}
+                style={[s.fabBtn, subView === b.key && s.fabBtnActive]}
+                onPress={() => setSubView(b.key)}
+                activeOpacity={0.7}>
+                <Ionicons name={b.icon} size={22}
+                  color={subView === b.key ? '#2196F3' : '#8E8E93'} />
+              </TouchableOpacity>
+            ))}
+          </View>
           <TouchableOpacity
-            key={b.key}
-            style={[s.fabBtn, subView === b.key && s.fabBtnActive]}
-            onPress={() => setSubView(b.key)}
+            style={s.fabDialBtn}
+            onPress={() => setDialpadOpen(true)}
             activeOpacity={0.7}>
-            <Ionicons name={b.icon} size={22}
-              color={subView === b.key ? '#2196F3' : '#8E8E93'} />
+            <Ionicons name="keypad" size={24} color="#FFF" />
           </TouchableOpacity>
-        ))}
-      </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -451,22 +674,39 @@ const s = StyleSheet.create({
   emptySubT: { color: '#3A3A3C', fontSize: 13 },
 
   /* search bar */
+  searchBarRow: { paddingHorizontal: 14, paddingVertical: 8 },
   searchBar: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#1C1C1E', marginHorizontal: 14, marginVertical: 8,
-    borderRadius: 28, paddingHorizontal: 6, paddingVertical: 6, gap: 10,
+    backgroundColor: '#1C1C1E',
+    borderRadius: 28, paddingHorizontal: 8, paddingVertical: 8, gap: 10,
   },
-  searchAvatar: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
-  searchAvatarT: { color: '#FFF', fontSize: 14, fontWeight: '700' },
-  searchPlaceholder: { flex: 1, color: '#6B6B6B', fontSize: 15 },
-  searchDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#F44336', marginRight: 10 },
+  searchAvatar: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center' },
+  searchAvatarT: { color: '#FFF', fontSize: 15, fontWeight: '700' },
+  searchPlaceholder: { flex: 1, color: '#6B6B6B', fontSize: 16 },
+  menuDotBtn: { padding: 8 },
+
+  /* 3-dot menu */
+  menuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' },
+  menuDropdown: {
+    position: 'absolute', top: 56, right: 16,
+    backgroundColor: '#2C2C2E', borderRadius: 12,
+    paddingVertical: 6, minWidth: 220, elevation: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4, shadowRadius: 8,
+  },
+  menuOption: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    paddingHorizontal: 16, paddingVertical: 14,
+  },
+  menuOptionText: { color: '#E0E0E0', fontSize: 15, fontWeight: '500' },
 
   /* recent bubbles */
-  recentScroll: { paddingHorizontal: 14, paddingTop: 6, paddingBottom: 12, gap: 16 },
-  recentBubble: { alignItems: 'center', width: 68 },
-  recentAvatarWrap: { position: 'relative', marginBottom: 6 },
-  recentAvatar: { width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center' },
-  recentAvatarT: { color: '#FFF', fontSize: 20, fontWeight: '700' },
+  recentScroll: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 14, gap: 20 },
+  recentBubble: { alignItems: 'center', width: 84 },
+  recentAvatarWrap: { position: 'relative', marginBottom: 8 },
+  recentAvatar: { width: 68, height: 68, borderRadius: 34, justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
+  recentAvatarT: { color: '#FFF', fontSize: 24, fontWeight: '700' },
+  recentAvatarImg: { width: 68, height: 68, borderRadius: 34 },
   timeBadge: {
     position: 'absolute', bottom: -2, left: -2,
     backgroundColor: '#1B5E20', borderRadius: 8,
@@ -474,15 +714,17 @@ const s = StyleSheet.create({
     borderWidth: 2, borderColor: '#0A0A0A',
   },
   timeBadgeT: { color: '#4CAF50', fontSize: 9, fontWeight: '800' },
-  recentName: { color: '#E0E0E0', fontSize: 11, textAlign: 'center' },
-  recentSub: { color: '#5A5A5E', fontSize: 10 },
+  recentName: { color: '#E0E0E0', fontSize: 13, textAlign: 'center', fontWeight: '500' },
+  recentSubRow: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 1 },
+  recentSub: { color: '#5A5A5E', fontSize: 11 },
 
   /* call rows */
-  callRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, gap: 14 },
-  avatar: { width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center' },
-  avatarT: { color: '#FFF', fontSize: 18, fontWeight: '700' },
+  callRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 16, gap: 14 },
+  avatar: { width: 52, height: 52, borderRadius: 26, justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
+  avatarT: { color: '#FFF', fontSize: 20, fontWeight: '700' },
+  avatarImg: { width: 52, height: 52, borderRadius: 26 },
   callInfo: { flex: 1 },
-  callName: { color: '#FFF', fontSize: 15, fontWeight: '500', marginBottom: 3 },
+  callName: { color: '#FFF', fontSize: 16, fontWeight: '600', marginBottom: 4 },
   callMeta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   simBadge: {
     width: 16, height: 14, borderRadius: 2,
@@ -490,7 +732,7 @@ const s = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
   },
   simText: { color: '#5A5A5E', fontSize: 8, fontWeight: '800' },
-  callTime: { color: '#6B6B6B', fontSize: 12 },
+  callTime: { color: '#6B6B6B', fontSize: 13 },
   phoneBtn: { padding: 8 },
 
   /* contacts */
@@ -508,52 +750,85 @@ const s = StyleSheet.create({
   },
 
   /* favorites grid */
-  favGrid: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 100 },
+  favGrid: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 160 },
   favWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   favCard: { alignItems: 'center', width: (SCREEN_W - 32 - 24) / 3, marginBottom: 16 },
-  favAvatar: { width: 90, height: 90, borderRadius: 45, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  favAvatar: { width: 90, height: 90, borderRadius: 45, justifyContent: 'center', alignItems: 'center', marginBottom: 8, overflow: 'hidden' },
   favAvatarT: { color: '#FFF', fontSize: 32, fontWeight: '700' },
+  favAvatarImg: { width: 90, height: 90, borderRadius: 45 },
   favName: { color: '#E0E0E0', fontSize: 12, textAlign: 'center', fontWeight: '500' },
 
-  /* dialpad */
-  dialContainer: {
-    flex: 1, justifyContent: 'flex-end', paddingBottom: 16,
-    backgroundColor: '#1C1C1E', borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    marginTop: 8,
-  },
-  dialDisplay: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 20, paddingHorizontal: 32, gap: 12,
-  },
-  dialDisplayText: { color: '#FFF', fontSize: 30, fontWeight: '300', letterSpacing: 2 },
-  dialPad: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 24 },
-  dialKey: { width: '33.33%', alignItems: 'center', justifyContent: 'center', paddingVertical: 16 },
-  dialDigit: { color: '#FFF', fontSize: 32, fontWeight: '300' },
-  dialLetters: { color: '#8E8E93', fontSize: 10, fontWeight: '700', letterSpacing: 2, marginTop: 2 },
-  simRow: { flexDirection: 'row', justifyContent: 'center', gap: 16, paddingVertical: 12, paddingHorizontal: 24 },
-  simBtn: {
+  /* dialpad bottom sheet */
+  dialOverlay: { flex: 1, justifyContent: 'flex-end' },
+  dialOverlayBg: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)' },
+  dialSheet: { backgroundColor: '#1C1C1E', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: 12, paddingBottom: 24 },
+  dialPadArea: { paddingBottom: 0 },
+  dialDisplayRow: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#1B5E20', borderRadius: 24,
-    paddingHorizontal: 20, paddingVertical: 12, gap: 8,
-    flex: 1, justifyContent: 'center',
+    paddingVertical: 12, paddingHorizontal: 20, gap: 8,
   },
-  simIcon: {
-    width: 20, height: 20, borderRadius: 3,
-    borderWidth: 1.5, borderColor: '#4CAF50',
+  dialAddContactBtn: { padding: 8 },
+  dialNumberDisplay: { flex: 1, alignItems: 'center' },
+  dialDisplayText: { color: '#FFF', fontSize: 32, fontWeight: '300', letterSpacing: 2 },
+  dialBackspaceBtn: { padding: 8 },
+  dialLookupName: {
+    color: '#8E8E93', fontSize: 13, textAlign: 'center',
+    marginBottom: 8, fontWeight: '500',
+  },
+  dialPad: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 20 },
+  dialKey: { width: '33.33%', alignItems: 'center', justifyContent: 'center', paddingVertical: 6 },
+  dialKeyInner: {
+    width: 100, height: 52, borderRadius: 14,
+    backgroundColor: '#2C2C2E',
     justifyContent: 'center', alignItems: 'center',
   },
-  simIconT: { color: '#4CAF50', fontSize: 10, fontWeight: '800' },
+  dialDigit: { color: '#FFF', fontSize: 26, fontWeight: '400' },
+  dialLetters: { color: '#8E8E93', fontSize: 9, fontWeight: '700', letterSpacing: 2, marginTop: 0 },
+  simRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 20 },
+  simBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#1B5E20', borderRadius: 28,
+    paddingHorizontal: 20, paddingVertical: 14, gap: 10,
+    flex: 1, justifyContent: 'center',
+  },
   simLabel: { color: '#4CAF50', fontSize: 14, fontWeight: '700' },
 
+  /* dial contact matches */
+  dialContactsSection: { paddingTop: 4, paddingBottom: 4 },
+  dialContactsLabel: { color: '#8E8E93', fontSize: 12, fontWeight: '600', paddingHorizontal: 16, paddingVertical: 6 },
+  dialContactRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingHorizontal: 16, paddingVertical: 10,
+  },
+  dialContactAvatar: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
+  dialContactAvatarT: { color: '#FFF', fontSize: 14, fontWeight: '700' },
+  dialContactName: { color: '#FFF', fontSize: 14, fontWeight: '500' },
+  dialContactPhone: { color: '#6B6B6B', fontSize: 12 },
+  dialSearchRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 16, paddingVertical: 12,
+  },
+  dialSearchText: { color: '#2196F3', fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
+
   /* floating action bar */
-  fab: {
-    position: 'absolute', bottom: 12, alignSelf: 'center',
+  fabRow: {
+    position: 'absolute', bottom: 68, left: 0, right: 0,
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 12,
+  },
+  fabPill: {
     flexDirection: 'row', backgroundColor: '#2C2C2E',
-    borderRadius: 28, paddingHorizontal: 8, paddingVertical: 6, gap: 4,
+    borderRadius: 30, paddingHorizontal: 6, paddingVertical: 4, gap: 2,
     elevation: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4, shadowRadius: 8,
   },
-  fabBtn: { width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center' },
-  fabBtnActive: { backgroundColor: '#1A3A5C' },
+  fabDialBtn: {
+    width: 56, height: 56, borderRadius: 16,
+    backgroundColor: '#2196F3', justifyContent: 'center', alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4, shadowRadius: 8,
+  },
+  fabBtn: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
+  fabBtnActive: { backgroundColor: '#1A3A5C', borderRadius: 14 },
 });

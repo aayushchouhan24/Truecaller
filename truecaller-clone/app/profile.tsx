@@ -47,6 +47,7 @@ function MenuItem({ icon, iconLib, label, badge, onPress, color }: {
 export default function ProfileScreen() {
   const { user, setUser } = useAuthStore();
   const [blockedCount, setBlockedCount] = useState(0);
+  const [blockedNumbers, setBlockedNumbers] = useState<{ phoneNumber: string; reason: string }[]>([]);
   const [stats, setStats] = useState({
     contactsSynced: 0, spamReported: 0, nameContributions: 0,
     trustScore: 1.0, verificationLevel: 'NONE',
@@ -54,6 +55,7 @@ export default function ProfileScreen() {
   });
   const [viewers, setViewers] = useState<any[]>([]);
   const [editModalVisible, setEditModalVisible] = useState(false);
+  const [blockListVisible, setBlockListVisible] = useState(false);
   const [editName, setEditName] = useState(user?.name || '');
   const [saving, setSaving] = useState(false);
   // Calculate profile completion based on what the user has filled in
@@ -86,7 +88,12 @@ export default function ProfileScreen() {
 
   useEffect(() => {
     (async () => {
-      setBlockedCount(await callBlockingService.getBlockedCount());
+      const count = await callBlockingService.getBlockedCount();
+      setBlockedCount(count);
+      try {
+        const blocked = await callBlockingService.getBlockedNumbers();
+        setBlockedNumbers(blocked);
+      } catch {}
       try {
         const res = await usersApi.getStats();
         if (res.data) setStats((prev) => ({ ...prev, ...res.data }));
@@ -97,6 +104,13 @@ export default function ProfileScreen() {
       } catch {}
     })();
   }, []);
+
+  const handleUnblock = async (phoneNumber: string) => {
+    await callBlockingService.unblockNumber(phoneNumber);
+    const updated = await callBlockingService.getBlockedNumbers();
+    setBlockedNumbers(updated);
+    setBlockedCount(updated.length);
+  };
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
@@ -154,7 +168,7 @@ export default function ProfileScreen() {
         <View style={s.menuSection}>
           <MenuItem icon="ban" iconLib="ion" label="Manage blocking"
             badge={blockedCount > 0 ? `${blockedCount}` : undefined}
-            onPress={() => Alert.alert('Blocked Numbers', `${blockedCount} numbers blocked`)} />
+            onPress={() => setBlockListVisible(true)} />
           <MenuItem icon="crown" iconLib="mci" label="Upgrade to Premium" color="#FFB300"
             onPress={() => router.push('/(tabs)/premium')} />
           <MenuItem icon="eye-outline" iconLib="ion" label="Who viewed my profile"
@@ -240,6 +254,41 @@ export default function ProfileScreen() {
                 {saving ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.modalSaveT}>Save</Text>}
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Blocked Numbers Modal ──────────── */}
+      <Modal visible={blockListVisible} transparent animationType="slide" onRequestClose={() => setBlockListVisible(false)}>
+        <View style={s.modalOverlay}>
+          <View style={[s.modalBox, { maxHeight: '70%' }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <Text style={s.modalTitle}>Blocked Numbers</Text>
+              <TouchableOpacity onPress={() => setBlockListVisible(false)}>
+                <Ionicons name="close" size={24} color="#8E8E93" />
+              </TouchableOpacity>
+            </View>
+            {blockedNumbers.length === 0 ? (
+              <View style={{ alignItems: 'center', paddingVertical: 32 }}>
+                <Ionicons name="checkmark-circle-outline" size={48} color="#4CAF50" />
+                <Text style={{ color: '#8E8E93', fontSize: 14, marginTop: 12 }}>No blocked numbers</Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 400 }}>
+                {blockedNumbers.map((b, i) => (
+                  <View key={i} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: '#1C1C1E' }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: '#FFF', fontSize: 15 }}>{b.phoneNumber}</Text>
+                      {b.reason ? <Text style={{ color: '#6B6B6B', fontSize: 12, marginTop: 2 }}>{b.reason}</Text> : null}
+                    </View>
+                    <TouchableOpacity onPress={() => handleUnblock(b.phoneNumber)}
+                      style={{ backgroundColor: '#2C2C2E', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 6 }}>
+                      <Text style={{ color: '#F44336', fontSize: 13, fontWeight: '600' }}>Unblock</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
           </View>
         </View>
       </Modal>

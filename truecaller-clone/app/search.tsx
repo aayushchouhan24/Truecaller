@@ -1,10 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
     View, Text, TextInput, FlatList, StyleSheet, TouchableOpacity,
     StatusBar, ActivityIndicator, Keyboard, Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { contactsApi, numbersApi } from '../src/services/api';
@@ -36,10 +36,16 @@ function isPhoneNumber(q: string): boolean {
 /* ── screen ──────────────────────────────────────────── */
 
 export default function SearchScreen() {
-    const [query, setQuery] = useState('');
+    const params = useLocalSearchParams<{ q?: string }>();
+    const [query, setQuery] = useState(params.q || '');
     const [contacts, setContacts] = useState<UserContact[]>([]);
     const [searchHistory, setSearchHistory] = useState<{ query: string; phoneNumber?: string; resultName?: string }[]>([]);
     const [lookingUp, setLookingUp] = useState(false);
+
+    // Handle incoming q param from dialpad
+    useEffect(() => {
+        if (params.q) setQuery(params.q);
+    }, [params.q]);
 
     // Load contacts & search history on mount
     useFocusEffect(
@@ -193,8 +199,8 @@ export default function SearchScreen() {
                                     <Ionicons name="search" size={20} color="#2196F3" />
                                 </View>
                                 <View style={st.info}>
-                                    <Text style={st.lookupTitle}>{'Look up "' + query.trim() + '"'}</Text>
-                                    <Text style={st.lookupSub}>Search in Truecaller database</Text>
+                                    <Text style={st.lookupTitle}>{'Search \'' + query.trim() + '\' on Truecaller'}</Text>
+                                    <Text style={st.lookupSub}>Find caller identity</Text>
                                 </View>
                                 <Ionicons name="chevron-forward" size={18} color="#5A5A5E" />
                             </TouchableOpacity>

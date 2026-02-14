@@ -23,37 +23,44 @@ export class ContactsService {
       name: c.name,
     }));
 
-    // Batch upsert user contacts using a transaction
-    const BATCH_SIZE = 200;
+    // Batch upsert user contacts using createMany + raw update for speed
+    const BATCH_SIZE = 500;
     for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
       const batch = normalized.slice(i, i + BATCH_SIZE);
 
-      await this.prisma.$transaction(
-        batch.map((c) =>
-          this.prisma.userContact.upsert({
-            where: {
-              userId_phoneNumber: {
-                userId,
-                phoneNumber: c.phoneNumber,
-              },
-            },
-            create: {
-              userId,
-              phoneNumber: c.phoneNumber,
-              name: c.name,
-            },
-            update: {
-              name: c.name,
-            },
-          }),
-        ),
-      );
+      // Use createMany for new contacts (fast)
+      await this.prisma.userContact.createMany({
+        data: batch.map((c) => ({
+          userId,
+          phoneNumber: c.phoneNumber,
+          name: c.name,
+        })),
+        skipDuplicates: true,
+      });
+
+      // Update names for existing contacts in smaller sub-batches
+      const UPDATE_SIZE = 50;
+      for (let j = 0; j < batch.length; j += UPDATE_SIZE) {
+        const updateBatch = batch.slice(j, j + UPDATE_SIZE);
+        await this.prisma.$transaction(
+          updateBatch.map((c) =>
+            this.prisma.userContact.updateMany({
+              where: { userId, phoneNumber: c.phoneNumber },
+              data: { name: c.name },
+            }),
+          ),
+        );
+      }
+
       synced += batch.length;
     }
 
-    // Add name contributions in bulk in background (don't block the response)
+    // Process name contributions AND resolve names in background
+    const allPhones = normalized.map((c) => c.phoneNumber);
+
     setImmediate(async () => {
       try {
+        // Step 1: Add name contributions in bulk
         const result = await this.identityService.addNameContributionsBatch(
           normalized.map((c) => ({ phoneNumber: c.phoneNumber, name: c.name })),
           userId,
@@ -65,6 +72,13 @@ export class ContactsService {
           `User ${userId}: batch contributions done — ${result.created} created, ` +
           `${result.skipped} skipped, ${result.junk} junk`,
         );
+
+        // Step 2: Also resolve names for any remaining unresolved identities
+        // This catches numbers that already had identities but no resolvedName
+        const resolved = await this.identityService.bulkResolveNamesFromContacts(allPhones);
+        if (resolved > 0) {
+          this.logger.log(`User ${userId}: resolved ${resolved} additional names from contacts`);
+        }
       } catch (error) {
         this.logger.error(`User ${userId}: batch contribution failed`, error);
       }

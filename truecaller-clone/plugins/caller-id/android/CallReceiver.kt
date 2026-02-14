@@ -3,6 +3,7 @@ package com.truecallerclone.app
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.telephony.TelephonyManager
 
 class CallReceiver : BroadcastReceiver() {
@@ -37,11 +38,7 @@ class CallReceiver : BroadcastReceiver() {
                         action = CallerIdOverlayService.ACTION_INCOMING_CALL
                         putExtra(CallerIdOverlayService.EXTRA_PHONE_NUMBER, incomingNumber)
                     }
-                    try {
-                        context.startService(serviceIntent)
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
+                    startOverlayService(context, serviceIntent)
                 }
                 lastState = TelephonyManager.CALL_STATE_RINGING
             }
@@ -52,7 +49,7 @@ class CallReceiver : BroadcastReceiver() {
                     val serviceIntent = Intent(context, CallerIdOverlayService::class.java).apply {
                         action = CallerIdOverlayService.ACTION_CALL_ANSWERED
                     }
-                    try { context.startService(serviceIntent) } catch (_: Exception) {}
+                    startOverlayService(context, serviceIntent)
                 }
                 lastState = TelephonyManager.CALL_STATE_OFFHOOK
             }
@@ -67,7 +64,7 @@ class CallReceiver : BroadcastReceiver() {
                             putExtra(CallerIdOverlayService.EXTRA_PHONE_NUMBER, incomingNumber)
                             putExtra(CallerIdOverlayService.EXTRA_RING_DURATION, ringDuration)
                         }
-                        try { context.startService(serviceIntent) } catch (_: Exception) {}
+                        startOverlayService(context, serviceIntent)
                     }
                     TelephonyManager.CALL_STATE_OFFHOOK -> {
                         if (isIncoming) {
@@ -78,7 +75,7 @@ class CallReceiver : BroadcastReceiver() {
                                 putExtra(CallerIdOverlayService.EXTRA_PHONE_NUMBER, incomingNumber)
                                 putExtra(CallerIdOverlayService.EXTRA_CALL_DURATION, duration)
                             }
-                            try { context.startService(serviceIntent) } catch (_: Exception) {}
+                            startOverlayService(context, serviceIntent)
                         }
                     }
                 }
@@ -88,6 +85,22 @@ class CallReceiver : BroadcastReceiver() {
                 incomingNumber = null
                 callStartTime = 0
             }
+        }
+    }
+
+    /**
+     * Start the overlay service using startForegroundService() on Android 8+
+     * so it works even when the app is killed / in background.
+     */
+    private fun startOverlayService(context: Context, intent: Intent) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }

@@ -137,22 +137,14 @@ export default function SettingsScreen() {
         <View style={s.menuSection}>
           <SettingsItem icon="settings-outline" iconLib="ion" label="General"
             onPress={() => Linking.openSettings()} />
-          <SettingsItem icon="call-outline" iconLib="ion" label="Calls"
-            onPress={() => Alert.alert('Calls', 'Call settings will appear here')} />
-          <SettingsItem icon="chatbubble-outline" iconLib="ion" label="Messaging"
-            onPress={() => Alert.alert('Messaging', 'Message settings will appear here')} />
-          <SettingsItem icon="robot" iconLib="mci" label="Assistant"
-            onPress={() => router.push('/(tabs)/assistant')} />
-          <SettingsItem icon="shield-outline" iconLib="ion" label="Privacy Center"
-            onPress={() => Alert.alert('Privacy', 'Privacy settings will appear here')} />
-          <SettingsItem icon="ban" iconLib="ion" label="Block"
-            onPress={() => Alert.alert('Block', 'Manage blocked numbers')} />
-          <SettingsItem icon="watch" iconLib="mci" label="Truecaller for Wear OS"
-            onPress={() => Alert.alert('Wear OS', 'Coming soon')} />
-          <SettingsItem icon="information-circle-outline" iconLib="ion" label="About Truecaller"
-            onPress={() => Alert.alert('Truecaller', 'Version 1.0.0\nDevelopment Build')} />
-          <SettingsItem icon="help-circle-outline" iconLib="ion" label="Help" showDivider={false}
-            onPress={() => Alert.alert('Help', 'Contact support')} />
+          <SettingsItem icon="shield-outline" iconLib="ion" label="Caller ID & Spam"
+            onPress={() => Linking.openSettings()} />
+          <SettingsItem icon="ban" iconLib="ion" label="Blocked numbers"
+            onPress={() => router.push('/profile')} />
+          <SettingsItem icon="notifications-outline" iconLib="ion" label="Notifications"
+            onPress={() => Linking.openURL('app-settings:notifications')} />
+          <SettingsItem icon="information-circle-outline" iconLib="ion" label="About"
+            onPress={() => Alert.alert('Truecaller Clone', 'Version 1.0.0\nDevelopment Build')} showDivider={false} />
         </View>
 
         {/* ── Logout ────────────────────────── */}

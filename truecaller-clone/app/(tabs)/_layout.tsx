@@ -1,11 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Platform, PermissionsAndroid } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Tabs } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { smsService } from '../../src/services/smsReader';
 import { callLogsService } from '../../src/services/callLogs';
 import { spamApi } from '../../src/services/api';
+import { callBlockingService } from '../../src/services/callBlocking';
 
 function Badge({ count }: { count: number }) {
   if (count <= 0) return null;
@@ -17,9 +19,36 @@ function Badge({ count }: { count: number }) {
 }
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 0);
   const [msgBadge, setMsgBadge] = useState(0);
   const [spamBadge, setSpamBadge] = useState(0);
   const [missedBadge, setMissedBadge] = useState(0);
+
+  /* ── Request all permissions on first launch ───── */
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    (async () => {
+      try {
+        const perms: any[] = [
+          PermissionsAndroid.PERMISSIONS.READ_CALL_LOG,
+          PermissionsAndroid.PERMISSIONS.READ_CONTACTS,
+          PermissionsAndroid.PERMISSIONS.READ_SMS,
+          PermissionsAndroid.PERMISSIONS.SEND_SMS,
+          PermissionsAndroid.PERMISSIONS.RECEIVE_SMS,
+          PermissionsAndroid.PERMISSIONS.CALL_PHONE,
+          PermissionsAndroid.PERMISSIONS.READ_PHONE_STATE,
+        ];
+        // POST_NOTIFICATIONS only available on API 33+
+        if ((PermissionsAndroid.PERMISSIONS as any).POST_NOTIFICATIONS) {
+          perms.push((PermissionsAndroid.PERMISSIONS as any).POST_NOTIFICATIONS);
+        }
+        await PermissionsAndroid.requestMultiple(perms);
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
 
   const refreshBadges = useCallback(async () => {
     try {
@@ -29,9 +58,9 @@ export default function TabLayout() {
         setMsgBadge(count);
       }
 
-      // Spam badge
-      const statsRes = await spamApi.getStats();
-      setSpamBadge(statsRes.data?.flaggedNumbers || 0);
+      // Spam badge — use local blocked count (device-specific)
+      const blocked = await callBlockingService.getBlockedCount();
+      setSpamBadge(blocked);
 
       // Missed calls badge
       if (callLogsService.isAvailable) {
@@ -55,7 +84,7 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarStyle: { backgroundColor: '#111', borderTopColor: '#1C1C1E', borderTopWidth: 0.5, height: 56, paddingBottom: 4 },
+        tabBarStyle: { backgroundColor: '#111', borderTopColor: '#1C1C1E', borderTopWidth: 0.5, height: 56 + bottomPad, paddingBottom: 4 + bottomPad },
         tabBarActiveTintColor: '#2196F3',
         tabBarInactiveTintColor: '#6B6B6B',
         tabBarLabelStyle: { fontSize: 10, fontWeight: '600' },
@@ -88,7 +117,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="scams"
         options={{
-          title: 'Spam',
+          title: 'Scams',
           tabBarIcon: ({ color, size }) => (
             <View>
               <Ionicons name="shield" size={size} color={color} />

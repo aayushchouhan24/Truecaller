@@ -316,6 +316,9 @@ export class IdentityService {
       }
     }
 
+    // ── Step 9: Bulk-resolve names for identities that still have NULL resolvedName ──
+    await this.bulkResolveNamesFromContacts(uniquePhones);
+
     const elapsed = Date.now() - startTime;
     this.logger.log(
       `Batch contributions: ${toCreate.length} created, ${skipped} duplicates skipped, ${junk} junk, ` +
@@ -323,6 +326,136 @@ export class IdentityService {
     );
 
     return { created: toCreate.length, skipped, junk };
+  }
+
+  // ── Bulk Resolve Names from UserContacts ──────────────────────────────
+
+  /**
+   * For each phone number where resolvedName is still NULL, find the most
+   * common name from ALL users' contacts and set it as the resolvedName.
+   * This ensures that if ANY user has saved a name for a number, it gets used.
+   */
+  async bulkResolveNamesFromContacts(phoneNumbers: string[]): Promise<number> {
+    if (phoneNumbers.length === 0) return 0;
+
+    // Find identities that still have NULL resolvedName AND no verifiedName
+    const unresolvedIdentities = await this.prisma.numberIdentity.findMany({
+      where: {
+        phoneNumber: { in: phoneNumbers },
+        resolvedName: null,
+        verifiedName: null,
+      },
+      select: { id: true, phoneNumber: true },
+    });
+
+    if (unresolvedIdentities.length === 0) return 0;
+
+    const unresolvedPhones = unresolvedIdentities.map((i) => i.phoneNumber);
+    const phoneToIdMap = new Map(unresolvedIdentities.map((i) => [i.phoneNumber, i.id]));
+
+    // Query all contact names across ALL users for these phone numbers
+    // Group by phone_number and name, count occurrences, pick the most common
+    const contactNames = await this.prisma.userContact.groupBy({
+      by: ['phoneNumber', 'name'],
+      where: { phoneNumber: { in: unresolvedPhones } },
+      _count: { name: true },
+      orderBy: { _count: { name: 'desc' } },
+    });
+
+    // Build a map: phoneNumber -> all name variants with counts
+    const namesByPhone = new Map<string, { name: string; count: number }[]>();
+    for (const row of contactNames) {
+      const { cleanedName, isJunk } = cleanName(row.name);
+      if (isJunk || !cleanedName) continue;
+      const existing = namesByPhone.get(row.phoneNumber) || [];
+      existing.push({ name: capitalizeName(cleanedName), count: row._count.name });
+      namesByPhone.set(row.phoneNumber, existing);
+    }
+
+    if (namesByPhone.size === 0) return 0;
+
+    // For numbers with multiple name variants, try AI resolution
+    const bestNameMap = new Map<string, { name: string; count: number }>();
+
+    for (const [phone, variants] of namesByPhone) {
+      if (variants.length === 1) {
+        // Only one name variant — use it directly
+        bestNameMap.set(phone, variants[0]);
+      } else if (variants.length >= 2 && this.ollamaService.isReady()) {
+        // Multiple variants — try AI to pick/combine the best name
+        try {
+          const aiVariants = variants.map(v => ({
+            name: v.name,
+            frequency: v.count,
+            trustWeight: v.count * 0.8,
+            sources: ['CONTACT_SYNC'],
+          }));
+          const aiResult = await this.ollamaService.analyzeBestName(phone, aiVariants);
+          if (aiResult) {
+            const totalCount = variants.reduce((s, v) => s + v.count, 0);
+            bestNameMap.set(phone, { name: capitalizeName(aiResult.bestName), count: totalCount });
+          } else {
+            // Fallback to highest count
+            const best = variants.sort((a, b) => b.count - a.count)[0];
+            bestNameMap.set(phone, best);
+          }
+        } catch {
+          // Fallback to highest count
+          const best = variants.sort((a, b) => b.count - a.count)[0];
+          bestNameMap.set(phone, best);
+        }
+      } else {
+        // Multiple variants but no AI — use highest count
+        const best = variants.sort((a, b) => b.count - a.count)[0];
+        bestNameMap.set(phone, best);
+      }
+    }
+
+    if (bestNameMap.size === 0) return 0;
+
+    // Batch update identities with resolved names
+    const BATCH = 200;
+    const entries = [...bestNameMap.entries()];
+    let resolved = 0;
+
+    for (let i = 0; i < entries.length; i += BATCH) {
+      const batch = entries.slice(i, i + BATCH);
+      await this.prisma.$transaction(
+        batch
+          .filter(([phone]) => phoneToIdMap.has(phone))
+          .map(([phone, { name, count }]) =>
+            this.prisma.numberIdentity.update({
+              where: { id: phoneToIdMap.get(phone)! },
+              data: {
+                resolvedName: name,
+                confidence: Math.min(count * 30, 90), // 1 user=30%, 2=60%, 3+=90%
+                lastResolvedAt: new Date(),
+              },
+            }),
+          ),
+      );
+      resolved += batch.length;
+    }
+
+    this.logger.log(`Bulk-resolved ${resolved} names from user contacts`);
+    return resolved;
+  }
+
+  /**
+   * Resolve ALL identities that have NULL resolvedName across the entire DB
+   * by checking user_contacts. This is meant for a one-time backfill or cron.
+   */
+  async resolveAllUnresolvedNames(): Promise<number> {
+    const unresolved = await this.prisma.numberIdentity.findMany({
+      where: { resolvedName: null, verifiedName: null },
+      select: { phoneNumber: true },
+    });
+
+    if (unresolved.length === 0) return 0;
+
+    const phones = unresolved.map((i) => i.phoneNumber);
+    this.logger.log(`Found ${phones.length} unresolved identities, resolving from contacts...`);
+    return this.bulkResolveNamesFromContacts(phones);
   }
 
   // ── STEP 6: Set Verified Name (self-declared by OTP-verified user) ──
@@ -359,19 +492,32 @@ export class IdentityService {
 
     // No identity found at all
     if (!identity) {
-      // Fallback: check UserContact table
-      const contact = await this.prisma.userContact.findFirst({
-        where: { phoneNumber: { in: phonesToTry } },
-        orderBy: { updatedAt: 'desc' },
-      });
+      // Fallback: check UserContact table across ALL users
+      const contactName = await this.getBestContactName(phonesToTry);
 
-      if (contact) {
-        const { cleanedName } = cleanName(contact.name);
+      if (contactName) {
+        // Also create the identity and set the name so future lookups are fast
+        const newIdentity = await this.prisma.numberIdentity.upsert({
+          where: { phoneNumber: normalized },
+          create: {
+            phoneNumber: normalized,
+            resolvedName: contactName.name,
+            confidence: contactName.confidence,
+            sourceCount: contactName.count,
+            lastResolvedAt: new Date(),
+          },
+          update: {
+            resolvedName: contactName.name,
+            confidence: contactName.confidence,
+            lastResolvedAt: new Date(),
+          },
+        });
+
         return {
           phoneNumber: normalized,
-          name: capitalizeName(cleanedName || contact.name),
-          confidence: 50,
-          sourceCount: 1,
+          name: contactName.name,
+          confidence: contactName.confidence,
+          sourceCount: contactName.count,
           isVerified: false,
         };
       }
@@ -398,26 +544,61 @@ export class IdentityService {
 
     // No contributions yet
     if (!identity.contributions || identity.contributions.length === 0) {
-      // Check UserContact as fallback
-      const contact = await this.prisma.userContact.findFirst({
-        where: { phoneNumber: { in: phonesToTry } },
-        orderBy: { updatedAt: 'desc' },
-      });
+      // Check UserContact across ALL users as fallback
+      const contactName = await this.getBestContactName(phonesToTry);
+
+      if (contactName) {
+        // Save to identity so name persists
+        await this.prisma.numberIdentity.update({
+          where: { id: identity.id },
+          data: {
+            resolvedName: contactName.name,
+            confidence: contactName.confidence,
+            lastResolvedAt: new Date(),
+          },
+        });
+      }
 
       return {
         phoneNumber: normalized,
-        name: contact ? capitalizeName(cleanName(contact.name).cleanedName || contact.name) : null,
-        confidence: contact ? 50 : 0,
-        sourceCount: contact ? 1 : 0,
+        name: contactName?.name ?? null,
+        confidence: contactName?.confidence ?? 0,
+        sourceCount: contactName?.count ?? 0,
         isVerified: false,
       };
     }
 
+    // ── Gather ALL name sources ──
+    // Also fetch names from UserContact table (how other users saved this number)
+    const allContactNames = await this.prisma.userContact.groupBy({
+      by: ['name'],
+      where: { phoneNumber: { in: phonesToTry } },
+      _count: { name: true },
+      orderBy: { _count: { name: 'desc' } },
+      take: 20,
+    });
+
+    // Add contact names as virtual contributions for clustering
+    const virtualContribs = allContactNames
+      .map(row => {
+        const { cleanedName, isJunk } = cleanName(row.name);
+        if (isJunk || !cleanedName) return null;
+        return {
+          cleanedName: cleanedName,
+          contributorTrustWeight: Math.min(row._count.name * 0.8, 3),
+          sourceType: 'CONTACT_SYNC' as const,
+          createdAt: new Date(),
+        };
+      })
+      .filter(Boolean) as { cleanedName: string; contributorTrustWeight: number; sourceType: string; createdAt: Date }[];
+
+    const allContribs = [...identity.contributions, ...virtualContribs];
+
     // ── STEP 5: Cluster similar names ──
-    const clusters = this.clusterNames(identity.contributions);
+    const clusters = this.clusterNames(allContribs);
 
     // ── STEP 7: AI Score each cluster ──
-    const scoredClusters = this.scoreClustersByAI(clusters, identity.contributions);
+    const scoredClusters = this.scoreClustersByAI(clusters, allContribs);
     scoredClusters.sort((a, b) => b.aiScore - a.aiScore);
 
     const winner = scoredClusters[0];
@@ -435,7 +616,7 @@ export class IdentityService {
     let bestName: string;
     let confidence: number;
 
-    const aiResult = await this.resolveNameWithAI(normalized, scoredClusters, identity.contributions);
+    const aiResult = await this.resolveNameWithAI(normalized, scoredClusters, allContribs);
 
     if (aiResult) {
       bestName = capitalizeName(aiResult.bestName);
@@ -486,8 +667,13 @@ export class IdentityService {
     scoredClusters: (NameClusterData & { aiScore: number })[],
     contributions: { cleanedName: string; contributorTrustWeight: number; sourceType: string; createdAt: Date }[],
   ) {
-    if (!this.ollamaService.isReady()) return null;
-    if (scoredClusters.length < 2) return null; // No ambiguity, skip AI
+    if (!this.ollamaService.isReady()) {
+      // Try to reconnect if Ollama wasn't ready at startup
+      await this.ollamaService.tryReconnect();
+      if (!this.ollamaService.isReady()) return null;
+    }
+    // Even with 1 cluster, AI can validate or pick the best variant
+    if (scoredClusters.length === 0) return null;
 
     try {
       const nameVariants = scoredClusters.map((cluster) => {
@@ -695,5 +881,38 @@ export class IdentityService {
     });
 
     return newContribs >= RECALC_THRESHOLD;
+  }
+
+  // ── Helper: Get best contact name across ALL users ────────────────
+
+  /**
+   * Looks up a phone number in ALL users' contacts and returns the most
+   * common name. This is the core logic for "if ANY user has saved this
+   * number with a name, use that name".
+   */
+  private async getBestContactName(
+    phoneNumbers: string[],
+  ): Promise<{ name: string; confidence: number; count: number } | null> {
+    const contacts = await this.prisma.userContact.groupBy({
+      by: ['name'],
+      where: { phoneNumber: { in: phoneNumbers } },
+      _count: { name: true },
+      orderBy: { _count: { name: 'desc' } },
+      take: 5,
+    });
+
+    for (const row of contacts) {
+      const { cleanedName, isJunk } = cleanName(row.name);
+      if (!isJunk && cleanedName) {
+        const count = row._count.name;
+        return {
+          name: capitalizeName(cleanedName),
+          confidence: Math.min(count * 30, 90),
+          count,
+        };
+      }
+    }
+
+    return null;
   }
 }

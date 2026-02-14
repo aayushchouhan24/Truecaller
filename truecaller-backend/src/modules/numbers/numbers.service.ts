@@ -139,4 +139,8 @@ export class NumbersService {
 
     return { message: 'Name contribution added', contributionId: contribution.id, contributed: true };
   }
+
+  async backfillUnresolvedNames(): Promise<number> {
+    return this.identityService.resolveAllUnresolvedNames();
+  }
 }

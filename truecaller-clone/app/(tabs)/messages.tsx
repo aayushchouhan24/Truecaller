@@ -1,12 +1,12 @@
 import React, { useState, useCallback, memo } from 'react';
 import {
   View, Text, FlatList, StyleSheet, TouchableOpacity,
-  StatusBar, ActivityIndicator, Alert, RefreshControl,
+  StatusBar, ActivityIndicator, Alert, RefreshControl, Modal, Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { smsService } from '../../src/services/smsReader';
 import { useAuthStore } from '../../src/store/authStore';
 
@@ -87,25 +87,43 @@ export default function MessagesScreen() {
   const [msgs, setMsgs] = useState<MsgItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [permDenied, setPermDenied] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
 
   const fetchData = useCallback(async (isRefresh = false) => {
     if (!isRefresh) setLoading(true);
     try {
       let items: MsgItem[] = [];
 
-      if (smsService.isAvailable) {
-        const deviceMsgs = await smsService.getMessages(300);
-        items = deviceMsgs.map(m => ({
-          id: m.id,
-          sender: m.address,
-          body: m.body,
-          date: m.dateStr,
-          isRead: m.read,
-          category: m.category,
-          isSpam: m.category === 'SPAM',
-          source: 'device' as const,
-        }));
+      if (!smsService.isAvailable) {
+        setPermDenied(true);
+        setMsgs([]);
+        return;
       }
+
+      // Ensure permission is granted
+      const hasPerm = await smsService.checkPermission();
+      if (!hasPerm) {
+        const granted = await smsService.requestPermission();
+        if (!granted) {
+          setPermDenied(true);
+          setMsgs([]);
+          return;
+        }
+      }
+      setPermDenied(false);
+
+      const deviceMsgs = await smsService.getMessages(300);
+      items = deviceMsgs.map(m => ({
+        id: m.id,
+        sender: m.address,
+        body: m.body,
+        date: m.dateStr,
+        isRead: m.read,
+        category: m.category,
+        isSpam: m.category === 'SPAM',
+        source: 'device' as const,
+      }));
       setMsgs(items);
     } catch (err: any) {
       console.error('Messages fetch:', err.message);
@@ -119,11 +137,16 @@ export default function MessagesScreen() {
   const onRefresh = () => { setRefreshing(true); fetchData(true); };
 
   const handleDelete = useCallback((item: MsgItem) => {
-    // Only device SMS, no API delete needed
-  }, [fetchData]);
+    Alert.alert('Delete', `Delete this message from ${item.sender}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => {
+        setMsgs(prev => prev.filter(m => m.id !== item.id));
+      }},
+    ]);
+  }, []);
 
   const handleRead = useCallback(async (item: MsgItem) => {
-    // SMS read state managed by device
+    router.push({ pathname: '/sms-conversation', params: { sender: item.sender } });
   }, []);
 
   const getInitials = (n: string) => {
@@ -131,18 +154,54 @@ export default function MessagesScreen() {
     return n.slice(0, 2).toUpperCase();
   };
 
+  /* ── 3-dot menu options ────────────────────── */
+  const menuOptions = [
+    { icon: 'mark-chat-read' as const, label: 'Mark all as read', onPress: () => setMenuVisible(false) },
+    { icon: 'cleaning-services' as const, label: 'Inbox Cleaner', onPress: () => setMenuVisible(false) },
+    { icon: 'star-outline' as const, label: 'Starred messages', onPress: () => setMenuVisible(false) },
+    { icon: 'archive' as const, label: 'Archived conversations', onPress: () => setMenuVisible(false) },
+    { icon: 'lock' as const, label: 'Passcode lock', onPress: () => setMenuVisible(false) },
+    { icon: 'block' as const, label: 'My block list', onPress: () => setMenuVisible(false) },
+    { icon: 'settings' as const, label: 'Settings', onPress: () => { setMenuVisible(false); router.push('/settings'); }},
+    { icon: 'sms' as const, label: 'Change default SMS app', onPress: () => { setMenuVisible(false); Linking.openSettings(); }},
+  ];
+
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <StatusBar barStyle="light-content" backgroundColor="#0A0A0A" />
 
       {/* ── Search Bar ──────────────────────── */}
-      <TouchableOpacity style={s.searchBar} onPress={() => router.push('/search')} activeOpacity={0.8}>
-        <View style={[s.searchAvatar, { backgroundColor: user?.name ? getColor(user.name) : '#2196F3' }]}>
-          <Text style={s.searchAvatarT}>{user?.name ? getInitials(user.name) : '?'}</Text>
-        </View>
-        <Text style={s.searchPlaceholder}>Search messages</Text>
-        <View style={s.searchDot} />
-      </TouchableOpacity>
+      <View style={s.searchBarRow}>
+        <TouchableOpacity style={s.searchBar} onPress={() => router.push('/search')} activeOpacity={0.8}>
+          <TouchableOpacity onPress={() => router.push('/profile')} activeOpacity={0.7}>
+            <View style={[s.searchAvatar, { backgroundColor: user?.name ? getColor(user.name) : '#2196F3' }]}>
+              <Text style={s.searchAvatarT}>{user?.name ? getInitials(user.name) : '?'}</Text>
+            </View>
+          </TouchableOpacity>
+          <Text style={s.searchPlaceholder}>Search messages</Text>
+          <TouchableOpacity
+            onPress={(e) => { e.stopPropagation?.(); setMenuVisible(true); }}
+            style={s.menuDotBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <MaterialIcons name="more-vert" size={22} color="#E0E0E0" />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── 3-dot Menu Modal ────────────────── */}
+      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
+        <TouchableOpacity style={s.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
+          <View style={s.menuDropdown}>
+            {menuOptions.map((opt, i) => (
+              <TouchableOpacity key={i} style={s.menuOption} onPress={opt.onPress} activeOpacity={0.7}>
+                <MaterialIcons name={opt.icon} size={20} color="#E0E0E0" />
+                <Text style={s.menuOptionText}>{opt.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {loading ? (
         <View style={s.center}><ActivityIndicator size="large" color="#2196F3" /></View>
@@ -150,7 +209,7 @@ export default function MessagesScreen() {
         <FlatList
           data={msgs}
           keyExtractor={m => m.id}
-          contentContainerStyle={{ paddingBottom: 80 }}
+          contentContainerStyle={{ paddingBottom: 140 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2196F3" colors={['#2196F3']} />}
           renderItem={({ item }) => (
             <MsgRow item={item}
@@ -159,9 +218,20 @@ export default function MessagesScreen() {
           )}
           ListEmptyComponent={
             <View style={s.center}>
-              <Ionicons name="chatbubble-outline" size={56} color="#2C2C2E" />
-              <Text style={s.emptyT}>No messages</Text>
-              <Text style={s.emptySubT}>Your SMS messages will appear here</Text>
+              <Ionicons name={permDenied ? "lock-closed-outline" : "chatbubble-outline"} size={56} color="#2C2C2E" />
+              <Text style={s.emptyT}>{permDenied ? 'SMS permission required' : 'No messages'}</Text>
+              <Text style={s.emptySubT}>
+                {permDenied
+                  ? 'Grant SMS permission to view your messages'
+                  : 'Your SMS messages will appear here'}
+              </Text>
+              {permDenied && (
+                <TouchableOpacity
+                  style={{ marginTop: 16, backgroundColor: '#2196F3', borderRadius: 20, paddingHorizontal: 24, paddingVertical: 10 }}
+                  onPress={() => fetchData()}>
+                  <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 14 }}>Grant Permission</Text>
+                </TouchableOpacity>
+              )}
             </View>
           }
           ItemSeparatorComponent={() => <View style={s.sep} />}
@@ -189,26 +259,42 @@ const s = StyleSheet.create({
   emptySubT: { color: '#3A3A3C', fontSize: 13 },
 
   /* search bar */
+  searchBarRow: { paddingHorizontal: 14, paddingVertical: 8 },
   searchBar: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#1C1C1E', marginHorizontal: 14, marginVertical: 8,
-    borderRadius: 28, paddingHorizontal: 6, paddingVertical: 6, gap: 10,
+    backgroundColor: '#1C1C1E',
+    borderRadius: 28, paddingHorizontal: 8, paddingVertical: 8, gap: 10,
   },
-  searchAvatar: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
-  searchAvatarT: { color: '#FFF', fontSize: 14, fontWeight: '700' },
-  searchPlaceholder: { flex: 1, color: '#6B6B6B', fontSize: 15 },
-  searchDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#F44336', marginRight: 10 },
+  searchAvatar: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center' },
+  searchAvatarT: { color: '#FFF', fontSize: 15, fontWeight: '700' },
+  searchPlaceholder: { flex: 1, color: '#6B6B6B', fontSize: 16 },
+  menuDotBtn: { padding: 8 },
+
+  /* 3-dot menu */
+  menuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' },
+  menuDropdown: {
+    position: 'absolute', top: 56, right: 16,
+    backgroundColor: '#2C2C2E', borderRadius: 12,
+    paddingVertical: 6, minWidth: 240, elevation: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4, shadowRadius: 8,
+  },
+  menuOption: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    paddingHorizontal: 16, paddingVertical: 14,
+  },
+  menuOptionText: { color: '#E0E0E0', fontSize: 15, fontWeight: '500' },
 
   /* message row */
-  row: { flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 14, gap: 14, alignItems: 'flex-start' },
-  avatar: { width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center', marginTop: 2 },
-  avatarT: { color: '#FFF', fontSize: 16, fontWeight: '700' },
+  row: { flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 16, gap: 14, alignItems: 'flex-start' },
+  avatar: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', marginTop: 2 },
+  avatarT: { color: '#FFF', fontSize: 18, fontWeight: '700' },
   info: { flex: 1 },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  sender: { color: '#B0B0B0', fontSize: 14, fontWeight: '600', flex: 1, letterSpacing: 0.5 },
-  time: { color: '#5A5A5E', fontSize: 11, marginLeft: 8 },
+  sender: { color: '#B0B0B0', fontSize: 15, fontWeight: '600', flex: 1, letterSpacing: 0.3 },
+  time: { color: '#5A5A5E', fontSize: 12, marginLeft: 8 },
   bodyRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  body: { color: '#6B6B6B', fontSize: 13, lineHeight: 18, flex: 1 },
+  body: { color: '#6B6B6B', fontSize: 14, lineHeight: 20, flex: 1 },
   unreadBadge: {
     backgroundColor: '#2196F3', borderRadius: 11,
     minWidth: 22, height: 22,
@@ -220,11 +306,12 @@ const s = StyleSheet.create({
 
   /* compose FAB */
   fab: {
-    position: 'absolute', bottom: 20, right: 20,
+    position: 'absolute', bottom: 76, right: 20,
     width: 56, height: 56, borderRadius: 28,
     backgroundColor: '#4CAF50', justifyContent: 'center', alignItems: 'center',
     elevation: 6,
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3, shadowRadius: 6,
   },
+
 });

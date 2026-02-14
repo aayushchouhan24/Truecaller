@@ -1,4 +1,4 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Controller, Post, Body, Get } from '@nestjs/common';
 import { NumbersService } from './numbers.service';
 import { LookupDto } from './dto/lookup.dto';
 import { ReportSpamDto } from './dto/report-spam.dto';
@@ -28,5 +28,15 @@ export class NumbersController {
     @Body() addNameDto: AddNameDto,
   ) {
     return this.numbersService.addName(userId, addNameDto);
+  }
+
+  @Post('backfill-names')
+  async backfillNames() {
+    const resolved = await this.numbersService.backfillUnresolvedNames();
+    return {
+      success: true,
+      message: `Resolved ${resolved} names from user contacts`,
+      resolved,
+    };
   }
 }
