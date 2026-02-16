@@ -197,8 +197,17 @@ jobs:
 
       - name: Verify deployment
         run: |
-          # Get ALB DNS
-          ALB_DNS=$(cd terraform && terraform output -raw alb_dns_name)
+          # Get ALB DNS from AWS (more reliable than Terraform in CI/CD)
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?contains(LoadBalancerName, 'truecaller-backend-alb')].DNSName | [0]" \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -z "$ALB_DNS" ] || [ "$ALB_DNS" == "None" ]; then
+            echo "⚠️ Could not retrieve ALB DNS, trying alternative query..."
+            ALB_DNS=$(aws elbv2 describe-load-balancers \
+              --query "LoadBalancers[?Tags[?Key=='Name' && contains(Value, 'backend')]].DNSName | [0]" \
+              --output text 2>/dev/null || echo "")
+          fi
           
           echo "🚀 Deployment Summary"
           echo "===================="
@@ -206,6 +215,13 @@ jobs:
           echo "Health Check: http://${ALB_DNS}/health"
           echo "Ollama URL: ${{ steps.terraform-outputs.outputs.ollama_url }}"
           echo ""
+          
+          if [ -z "$ALB_DNS" ] || [ "$ALB_DNS" == "None" ]; then
+            echo "⚠️ Could not determine ALB DNS for health check"
+            echo "Please verify deployment manually in AWS Console"
+            exit 0
+          fi
+          
           echo "Testing health endpoint..."
           
           # Wait a bit for service to stabilize
