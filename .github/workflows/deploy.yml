@@ -47,6 +47,12 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+          terraform_wrapper: false
+
       - name: Get Terraform outputs (Ollama URL)
         id: terraform-outputs
         run: |
@@ -73,10 +79,20 @@ jobs:
           echo "✅ Ollama URL: $OLLAMA_URL"
           echo "ollama_url=$OLLAMA_URL" >> $GITHUB_OUTPUT
           
-          # Get other required outputs
-          ECR_BACKEND_URL=$(terraform output -raw ecr_repository_url)
-          ECR_OLLAMA_URL=$(terraform output -raw ollama_ecr_repository_url)
+          # Get ECR URLs from Terraform or AWS
+          ECR_BACKEND_URL=$(terraform output -raw ecr_repository_url 2>/dev/null || echo "")
+          ECR_OLLAMA_URL=$(terraform output -raw ollama_ecr_repository_url 2>/dev/null || echo "")
           
+          # Fallback: Get ECR URLs from AWS if Terraform outputs not available
+          if [ -z "$ECR_BACKEND_URL" ]; then
+            echo "⚠️ Getting ECR URLs from AWS..."
+            AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+            ECR_BACKEND_URL="${AWS_ACCOUNT}.dkr.ecr.eu-central-1.amazonaws.com/truecaller-backend"
+            ECR_OLLAMA_URL="${AWS_ACCOUNT}.dkr.ecr.eu-central-1.amazonaws.com/truecaller-backend-ollama"
+          fi
+          
+          echo "✅ Backend ECR: $ECR_BACKEND_URL"
+          echo "✅ Ollama ECR: $ECR_OLLAMA_URL"
           echo "ecr_backend_url=$ECR_BACKEND_URL" >> $GITHUB_OUTPUT
           echo "ecr_ollama_url=$ECR_OLLAMA_URL" >> $GITHUB_OUTPUT
 
