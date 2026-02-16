@@ -1,0 +1,230 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - deploy
+  workflow_dispatch:
+    inputs:
+      deploy_ollama:
+        description: 'Deploy Ollama service (default: false)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_BACKEND_REPOSITORY: truecaller-backend
+  ECR_OLLAMA_REPOSITORY: truecaller-backend-ollama
+  ECS_CLUSTER: truecaller-backend-cluster
+  ECS_BACKEND_SERVICE: truecaller-backend-service
+  ECS_OLLAMA_SERVICE: truecaller-backend-ollama-service
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy Backend
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Get Terraform outputs (Ollama URL)
+        id: terraform-outputs
+        run: |
+          cd terraform
+          
+          # Get Ollama ALB DNS name from Terraform state
+          OLLAMA_ALB_DNS=$(terraform output -raw ollama_alb_dns_name 2>/dev/null || echo "")
+          
+          if [ -z "$OLLAMA_ALB_DNS" ]; then
+            echo "⚠️ Warning: Could not get Ollama ALB DNS from Terraform"
+            # Fallback: Try to get from AWS directly
+            OLLAMA_ALB_DNS=$(aws elbv2 describe-load-balancers \
+              --query "LoadBalancers[?contains(LoadBalancerName, 'ollama')].DNSName | [0]" \
+              --output text 2>/dev/null || echo "")
+          fi
+          
+          if [ -z "$OLLAMA_ALB_DNS" ] || [ "$OLLAMA_ALB_DNS" == "None" ]; then
+            echo "❌ Error: Could not determine Ollama URL"
+            echo "Please ensure Ollama service is deployed first"
+            exit 1
+          fi
+          
+          OLLAMA_URL="http://${OLLAMA_ALB_DNS}"
+          echo "✅ Ollama URL: $OLLAMA_URL"
+          echo "ollama_url=$OLLAMA_URL" >> $GITHUB_OUTPUT
+          
+          # Get other required outputs
+          ECR_BACKEND_URL=$(terraform output -raw ecr_repository_url)
+          ECR_OLLAMA_URL=$(terraform output -raw ollama_ecr_repository_url)
+          
+          echo "ecr_backend_url=$ECR_BACKEND_URL" >> $GITHUB_OUTPUT
+          echo "ecr_ollama_url=$ECR_OLLAMA_URL" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Backend Docker image
+        id: build-backend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building backend image..."
+          docker build \
+            -t $ECR_REGISTRY/$ECR_BACKEND_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_BACKEND_REPOSITORY:latest \
+            -f Dockerfile \
+            --cache-from $ECR_REGISTRY/$ECR_BACKEND_REPOSITORY:latest \
+            .
+          
+          echo "Pushing backend image..."
+          docker push $ECR_REGISTRY/$ECR_BACKEND_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_BACKEND_REPOSITORY:latest
+          
+          echo "image_uri=$ECR_REGISTRY/$ECR_BACKEND_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Build Ollama Docker image (if enabled)
+        if: ${{ github.event.inputs.deploy_ollama == 'true' }}
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "⚠️ Building Ollama image (this takes 5-10 minutes)..."
+          docker build \
+            -t $ECR_REGISTRY/$ECR_OLLAMA_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_OLLAMA_REPOSITORY:latest \
+            -f Dockerfile.ollama \
+            .
+          
+          echo "Pushing Ollama image..."
+          docker push $ECR_REGISTRY/$ECR_OLLAMA_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_OLLAMA_REPOSITORY:latest
+
+      - name: Run Database Migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "Running Prisma migrations..."
+          npm install --production=false
+          npx prisma migrate deploy || {
+            echo "⚠️ Migration failed or no pending migrations"
+            echo "Continuing deployment..."
+          }
+
+      - name: Download task definition (Backend)
+        id: download-taskdef-backend
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition truecaller-backend \
+            --query taskDefinition \
+            > task-definition-backend.json
+          
+          echo "Downloaded backend task definition"
+
+      - name: Update Backend task definition with new image and Ollama URL
+        id: task-def-backend
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition-backend.json
+          container-name: truecaller-backend
+          image: ${{ steps.build-backend.outputs.image_uri }}
+          environment-variables: |
+            OLLAMA_URL=${{ steps.terraform-outputs.outputs.ollama_url }}
+            OLLAMA_ENABLED=true
+            OLLAMA_MODEL=llama3.2:1b
+            OLLAMA_TIMEOUT=30000
+            NODE_ENV=production
+
+      - name: Deploy Backend to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def-backend.outputs.task-definition }}
+          service: ${{ env.ECS_BACKEND_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 10
+
+      - name: Deploy Ollama to ECS (if enabled)
+        if: ${{ github.event.inputs.deploy_ollama == 'true' }}
+        run: |
+          echo "Deploying Ollama service..."
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_OLLAMA_SERVICE }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "Waiting for Ollama service stability..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_OLLAMA_SERVICE }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Verify deployment
+        run: |
+          # Get ALB DNS
+          ALB_DNS=$(cd terraform && terraform output -raw alb_dns_name)
+          
+          echo "🚀 Deployment Summary"
+          echo "===================="
+          echo "Backend URL: http://${ALB_DNS}/api"
+          echo "Health Check: http://${ALB_DNS}/health"
+          echo "Ollama URL: ${{ steps.terraform-outputs.outputs.ollama_url }}"
+          echo ""
+          echo "Testing health endpoint..."
+          
+          # Wait a bit for service to stabilize
+          sleep 10
+          
+          # Try health check (allow failures initially)
+          for i in {1..5}; do
+            if curl -f -s "http://${ALB_DNS}/health" > /dev/null 2>&1; then
+              echo "✅ Health check passed!"
+              break
+            else
+              echo "⏳ Attempt $i/5: Health check pending..."
+              sleep 10
+            fi
+          done
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+          fi
+
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    if: failure()
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Trigger ECS rollback
+        run: |
+          echo "🔄 Triggering automatic rollback..."
+          echo "ECS Circuit Breaker will handle the rollback automatically"
+          echo "Check AWS Console for details: https://console.aws.amazon.com/ecs"

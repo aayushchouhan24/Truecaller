@@ -6,3 +6,16 @@ dist/
 firebase-service-account
 firebase-service-account.json
 docker-compose.override.yml
+
+# CI/CD artifacts
+task-definition-*.json
+deployment.tfplan
+*.tfplan
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+.terraform.lock.hcl
+
+# Test outputs
+coverage/
+test-results/

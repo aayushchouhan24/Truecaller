@@ -39,17 +39,59 @@ resource "aws_service_discovery_service" "ollama" {
 }
 
 # ------------------------------------------------------------
+# Ollama ALB Security Group
+# ------------------------------------------------------------
+
+resource "aws_security_group" "ollama_alb" {
+  name        = "${var.app_name}-ollama-alb-sg"
+  description = "Security group for Ollama ALB - PUBLIC"
+  vpc_id      = aws_vpc.main.id
+
+  # Allow HTTP from anywhere
+  ingress {
+    description = "Allow HTTP from anywhere"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow all outbound
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.app_name}-ollama-alb-sg"
+    Type = "Public"
+  }
+}
+
+# ------------------------------------------------------------
 # Ollama Security Group
 # ------------------------------------------------------------
 
 resource "aws_security_group" "ollama" {
   name        = "${var.app_name}-ollama-sg"
-  description = "Security group for Ollama service - INTERNAL ONLY"
+  description = "Security group for Ollama service - PUBLIC via ALB"
   vpc_id      = aws_vpc.main.id
 
-  # Allow HTTP from backend only
+  # Allow HTTP from Ollama ALB
   ingress {
-    description     = "Allow HTTP API requests from backend service only"
+    description     = "Allow HTTP from Ollama ALB"
+    from_port       = var.ollama_port
+    to_port         = var.ollama_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ollama_alb.id]
+  }
+
+  # Allow HTTP from backend (keep for direct access if needed)
+  ingress {
+    description     = "Allow HTTP API requests from backend service"
     from_port       = var.ollama_port
     to_port         = var.ollama_port
     protocol        = "tcp"
@@ -67,7 +109,65 @@ resource "aws_security_group" "ollama" {
 
   tags = {
     Name = "${var.app_name}-ollama-sg"
-    Type = "Internal"
+    Type = "Public"
+  }
+}
+
+# ------------------------------------------------------------
+# Ollama Application Load Balancer
+# ------------------------------------------------------------
+
+resource "aws_lb" "ollama" {
+  name               = "${var.app_name}-ollama-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.ollama_alb.id]
+  subnets            = aws_subnet.public[*].id
+
+  enable_deletion_protection = false
+  enable_http2               = true
+
+  tags = {
+    Name = "${var.app_name}-ollama-alb"
+    Type = "Public"
+  }
+}
+
+# Ollama Target Group
+resource "aws_lb_target_group" "ollama" {
+  name        = "${var.app_name}-ollama-tg"
+  port        = var.ollama_port
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  health_check {
+    enabled             = true
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200-299"
+    interval            = 60
+    timeout             = 10
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+
+  deregistration_delay = 30
+
+  tags = {
+    Name = "${var.app_name}-ollama-tg"
+  }
+}
+
+# Ollama HTTP Listener
+resource "aws_lb_listener" "ollama_http" {
+  load_balancer_arn = aws_lb.ollama.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.ollama.arn
   }
 }
 
@@ -204,10 +304,17 @@ resource "aws_ecs_service" "ollama" {
   network_configuration {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.ollama.id]
-    assign_public_ip = false  # CRITICAL: No public IP for Ollama
+    assign_public_ip = false
   }
 
-  # Register with Cloud Map for service discovery
+  # Attach to ALB target group for public access
+  load_balancer {
+    target_group_arn = aws_lb_target_group.ollama.arn
+    container_name   = "${var.app_name}-ollama"
+    container_port   = var.ollama_port
+  }
+
+  # Register with Cloud Map for service discovery (backup)
   service_registries {
     registry_arn = aws_service_discovery_service.ollama.arn
   }
@@ -228,11 +335,12 @@ resource "aws_ecs_service" "ollama" {
 
   tags = {
     Name = "${var.app_name}-ollama-service"
-    Type = "Internal"
+    Type = "Public"
   }
 
   depends_on = [
-    aws_service_discovery_service.ollama
+    aws_service_discovery_service.ollama,
+    aws_lb_listener.ollama_http
   ]
 }
 

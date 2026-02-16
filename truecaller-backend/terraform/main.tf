@@ -521,7 +521,7 @@ resource "aws_ecs_task_definition" "main" {
       },
       {
         name  = "OLLAMA_URL"
-        value = "http://ollama.${var.app_name}.local:${var.ollama_port}"
+        value = "http://${aws_lb.ollama.dns_name}"
       },
       {
         name  = "OLLAMA_MODEL"
@@ -623,7 +623,8 @@ resource "aws_ecs_service" "main" {
 
   depends_on = [
     aws_lb_listener.http,
-    aws_iam_role_policy.ecs_task_execution_secrets_policy
+    aws_iam_role_policy.ecs_task_execution_secrets_policy,
+    aws_lb.ollama
   ]
 }
 

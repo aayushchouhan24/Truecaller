@@ -49,6 +49,22 @@ output "alb_url" {
   value       = var.enable_https ? "https://${aws_lb.main.dns_name}" : "http://${aws_lb.main.dns_name}"
 }
 
+# Ollama ALB Outputs
+output "ollama_alb_dns_name" {
+  description = "DNS name of the Ollama Application Load Balancer"
+  value       = aws_lb.ollama.dns_name
+}
+
+output "ollama_alb_url" {
+  description = "URL to access Ollama via ALB"
+  value       = "http://${aws_lb.ollama.dns_name}"
+}
+
+output "ollama_alb_arn" {
+  description = "ARN of the Ollama Application Load Balancer"
+  value       = aws_lb.ollama.arn
+}
+
 output "target_group_arn" {
   description = "ARN of the target group"
   value       = aws_lb_target_group.main.arn
