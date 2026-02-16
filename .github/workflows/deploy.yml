@@ -1,9 +1,12 @@
-name: Deploy to AWS ECS
+name: Deploy Backend to AWS ECS
 
 on:
   push:
     branches:
       - deploy
+    paths:
+      - 'truecaller-backend/**'
+      - '!truecaller-backend/**/*.md'
   workflow_dispatch:
     inputs:
       deploy_ollama:
@@ -19,11 +22,15 @@ env:
   ECS_CLUSTER: truecaller-backend-cluster
   ECS_BACKEND_SERVICE: truecaller-backend-service
   ECS_OLLAMA_SERVICE: truecaller-backend-ollama-service
+  WORKING_DIR: truecaller-backend
 
 jobs:
   build-and-deploy:
     name: Build and Deploy Backend
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
     
     steps:
       - name: Checkout code
@@ -138,7 +145,7 @@ jobs:
         id: task-def-backend
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: task-definition-backend.json
+          task-definition: ${{ env.WORKING_DIR }}/task-definition-backend.json
           container-name: truecaller-backend
           image: ${{ steps.build-backend.outputs.image_uri }}
           environment-variables: |
