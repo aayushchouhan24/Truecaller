@@ -10,6 +10,7 @@ import { ReportSpamDto } from './dto/report-spam.dto';
 import { AddNameDto } from './dto/add-name.dto';
 
 const CACHE_TTL = 86400; // 24 hours — names are resolved on sync, not on lookup
+const NULL_NAME_CACHE_TTL = 300; // 5 minutes — re-check soon if name wasn't found
 const CACHE_PREFIX = 'lookup:';
 
 export interface LookupResult {
@@ -64,9 +65,51 @@ export class NumbersService {
     // ── Read pre-computed data from DB (no AI — names resolved on contact sync) ──
     const identity = await this.identityService.findOrCreateIdentity(phoneNumber);
     const isVerified = !!identity.verifiedName;
-    const resolvedName = isVerified
+    let resolvedName = isVerified
       ? identity.verifiedName
       : (identity.resolvedName || null);
+
+    // ── Synchronous fallback: if no resolvedName, check UserContacts & contributions NOW ──
+    // This prevents returning null for numbers that exist in the system but haven't been resolved yet
+    if (!resolvedName) {
+      const normalizedPhone = this.identityService.normalizePhone(phoneNumber);
+      const phonesToTry = [...new Set([normalizedPhone, phoneNumber])];
+
+      // 1. Check UserContact table — if ANY user saved this number with a name, use it
+      const contactName = await this.identityService.getBestContactName(phonesToTry);
+      if (contactName) {
+        resolvedName = contactName.name;
+        // Persist so future lookups don't need this fallback
+        await this.prisma.numberIdentity.update({
+          where: { id: identity.id },
+          data: {
+            resolvedName: contactName.name,
+            confidence: contactName.confidence,
+            lastResolvedAt: new Date(),
+          },
+        });
+        this.logger.log(`Sync-resolved name for ${phoneNumber}: "${contactName.name}"`);
+      } else {
+        // 2. Check NameContribution table — pick the top-weighted contribution
+        const topContrib = await this.prisma.nameContribution.findFirst({
+          where: { identity: { phoneNumber: { in: phonesToTry } } },
+          orderBy: { contributorTrustWeight: 'desc' },
+        });
+        if (topContrib?.cleanedName) {
+          resolvedName = topContrib.cleanedName;
+          // Persist
+          await this.prisma.numberIdentity.update({
+            where: { id: identity.id },
+            data: {
+              resolvedName: topContrib.cleanedName,
+              confidence: Math.round(topContrib.contributorTrustWeight * 30),
+              lastResolvedAt: new Date(),
+            },
+          });
+          this.logger.log(`Sync-resolved name from contributions for ${phoneNumber}: "${topContrib.cleanedName}"`);
+        }
+      }
+    }
 
     // Use pre-computed tags/role/description from the NumberIdentity row
     const tags: string[] = (identity as any).tags ?? [];
@@ -101,8 +144,9 @@ export class NumbersService {
       hasUserReportedSpam,
     };
 
-    // Cache for 24 hours (names update on contact sync, not on lookup)
-    await this.redisService.set(cacheKey, JSON.stringify(result), CACHE_TTL);
+    // Cache: use full TTL if name was found, short TTL if null (so we re-check soon)
+    const cacheTtl = resolvedName ? CACHE_TTL : NULL_NAME_CACHE_TTL;
+    await this.redisService.set(cacheKey, JSON.stringify(result), cacheTtl);
 
     // If identity has no resolvedName yet but has contributions, queue a background resolve
     if (!resolvedName && identity.sourceCount > 0) {

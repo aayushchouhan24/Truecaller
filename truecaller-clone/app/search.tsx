@@ -98,17 +98,19 @@ export default function SearchScreen() {
         setLookingUp(true);
         try {
             const res = await numbersApi.lookup(phoneNumber);
+            const name = res.data.name && res.data.name !== 'null' ? res.data.name : undefined;
+            
             // Save to local recent lookups
             await storageService.addRecentLookup({
                 phoneNumber,
-                name: res.data.name || undefined,
+                name: name,
             });
             router.push({
                 pathname: '/number-detail',
-                params: { phone: phoneNumber, name: res.data.name || '' },
+                params: { phone: phoneNumber, name: name || '' },
             });
         } catch (err: any) {
-            Alert.alert('Not Found', err.message);
+            Alert.alert('Lookup Failed', err.message || 'Unable to lookup number. Please try again.');
         } finally {
             setLookingUp(false);
         }

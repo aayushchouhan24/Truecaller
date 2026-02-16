@@ -586,60 +586,84 @@ class CallerIdOverlayService : Service() {
         }
 
         executor.execute {
-            try {
-                val url = URL("$apiUrl/numbers/lookup")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json")
-                if (!token.isNullOrEmpty()) {
-                    conn.setRequestProperty("Authorization", "Bearer $token")
-                }
-                conn.connectTimeout = 5000
-                conn.readTimeout = 5000
-                conn.doOutput = true
+            var attempt = 0
+            val maxAttempts = 2  // Original + 1 retry
+            var success = false
 
-                val bodyJson = JSONObject().apply { put("phoneNumber", phoneNumber) }
-                conn.outputStream.bufferedWriter().use { it.write(bodyJson.toString()) }
-
-                if (conn.responseCode in 200..299) {
-                    val response = conn.inputStream.bufferedReader().readText()
-                    val json = JSONObject(response)
-
-                    // Handle possible wrapper: { data: { ... } }
-                    val data = if (json.has("data") && json.get("data") is JSONObject)
-                        json.getJSONObject("data") else json
-
-                    val apiName = data.optString("name", "").ifEmpty {
-                        data.optString("bestName", "").ifEmpty { null }
+            while (attempt < maxAttempts && !success) {
+                try {
+                    val url = URL("$apiUrl/numbers/lookup")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    if (!token.isNullOrEmpty()) {
+                        conn.setRequestProperty("Authorization", "Bearer $token")
                     }
-                    val spamScore = data.optInt("spamScore", 0)
-                    val isSpam = data.optBoolean("isLikelySpam", false)
+                    conn.connectTimeout = 12000  // Increased from 5s to 12s for slower networks
+                    conn.readTimeout = 12000     // Increased from 5s to 12s for backend processing
+                    conn.doOutput = true
 
-                    // NEVER overwrite a good name with null — only upgrade
-                    if (!apiName.isNullOrEmpty()) {
-                        lookupName = apiName
-                    }
-                    lookupIsSpam = isSpam
-                    lookupSpamScore = spamScore
-                    lookupDone = true
+                    val bodyJson = JSONObject().apply { put("phoneNumber", phoneNumber) }
+                    conn.outputStream.bufferedWriter().use { it.write(bodyJson.toString()) }
 
-                    // Show API name if better, or keep existing name
-                    val displayName = if (!apiName.isNullOrEmpty()) apiName else lookupName
-                    handler.post { updateIncomingOverlay(displayName, isSpam, spamScore) }
-                } else {
-                    lookupDone = true
-                    // Don't overwrite existing name on error
-                    if (lookupName == null) {
-                        handler.post { updateIncomingOverlay(null, false, 0) }
+                    if (conn.responseCode in 200..299) {
+                        val response = conn.inputStream.bufferedReader().readText()
+                        val json = JSONObject(response)
+
+                        // Handle possible wrapper: { data: { ... } }
+                        val data = if (json.has("data") && json.get("data") is JSONObject)
+                            json.getJSONObject("data") else json
+
+                        // Handle null/empty/"null" string cases properly
+                        var apiName = data.optString("name", "")
+                        if (apiName.isEmpty() || apiName.equals("null", ignoreCase = true)) {
+                            apiName = data.optString("bestName", "")
+                            if (apiName.isEmpty() || apiName.equals("null", ignoreCase = true)) {
+                                apiName = ""  // Treat as empty, not "null" string
+                            }
+                        }
+                        val finalName = apiName.ifEmpty { null }
+                        val spamScore = data.optInt("spamScore", 0)
+                        val isSpam = data.optBoolean("isLikelySpam", false)
+
+                        // NEVER overwrite a good name with null — only upgrade
+                        if (!finalName.isNullOrEmpty()) {
+                            lookupName = finalName
+                        }
+                        lookupIsSpam = isSpam
+                        lookupSpamScore = spamScore
+                        lookupDone = true
+                        success = true
+
+                        // Show API name if better, or keep existing name
+                        val displayName = if (!finalName.isNullOrEmpty()) finalName else lookupName
+                        handler.post { updateIncomingOverlay(displayName, isSpam, spamScore) }
+                    } else {
+                        // Non-200 response - retry if we have attempts left
+                        attempt++
+                        if (attempt >= maxAttempts) {
+                            lookupDone = true
+                            // Don't overwrite existing name on error
+                            if (lookupName == null) {
+                                handler.post { updateIncomingOverlay(null, false, 0) }
+                            }
+                        } else {
+                            Thread.sleep(1000)  // Wait 1s before retry
+                        }
                     }
-                }
-                conn.disconnect()
-            } catch (e: Exception) {
-                e.printStackTrace()
-                lookupDone = true
-                // Don't overwrite existing name on error
-                if (lookupName == null) {
-                    handler.post { updateIncomingOverlay(null, false, 0) }
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    attempt++
+                    if (attempt >= maxAttempts) {
+                        lookupDone = true
+                        // Don't overwrite existing name on error
+                        if (lookupName == null) {
+                            handler.post { updateIncomingOverlay(null, false, 0) }
+                        }
+                    } else {
+                        Thread.sleep(1000)  // Wait 1s before retry
+                    }
                 }
             }
         }

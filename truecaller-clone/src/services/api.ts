@@ -34,8 +34,7 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (response) => response.data,
   async (error) => {
-    const message =
-      error.response?.data?.message || error.message || 'Network error';
+    const message = error.response?.data?.message || error.message || 'Network error';
     const formattedMsg = Array.isArray(message) ? message[0] : message;
 
     // If 401 on a non-auth endpoint, clear auth (session expired)
@@ -60,8 +59,22 @@ export const authApi = {
 };
 
 export const numbersApi = {
-  lookup: (phoneNumber: string) =>
-    api.post('/numbers/lookup', { phoneNumber }) as Promise<ApiResponse<LookupResult>>,
+  lookup: async (phoneNumber: string): Promise<ApiResponse<LookupResult>> => {
+    const res = await api.post('/numbers/lookup', { phoneNumber }) as ApiResponse<LookupResult>;
+
+    // If backend returned null name, retry once after a short delay
+    // (the first call may trigger background name resolution on the server)
+    if (res.data && (!res.data.name || res.data.name === 'null')) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const retry = await api.post('/numbers/lookup', { phoneNumber }) as ApiResponse<LookupResult>;
+      // Only use retry result if it actually has a name
+      if (retry.data?.name && retry.data.name !== 'null') {
+        return retry;
+      }
+    }
+
+    return res;
+  },
 
   addName: (payload: AddNamePayload) =>
     api.post('/numbers/add-name', payload) as Promise<ApiResponse<{ message: string; contributionId: string }>>,

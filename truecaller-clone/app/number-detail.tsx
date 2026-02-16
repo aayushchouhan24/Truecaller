@@ -35,7 +35,7 @@ export default function NumberDetailScreen() {
   const passedName = params.name || '';
 
   const [name, setName] = useState(passedName);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [spamScore, setSpamScore] = useState(0);
   const [confidence, setConfidence] = useState(0);
   const [isSpam, setIsSpam] = useState(false);
@@ -59,8 +59,15 @@ export default function NumberDetailScreen() {
     try {
       const res = await numbersApi.lookup(phone);
       const d = res.data;
+      
+      // Handle null, undefined, or "null" string properly
+      let resolvedName = d.name;
+      if (!resolvedName || resolvedName === 'null' || resolvedName === 'undefined') {
+        resolvedName = passedName || 'Unknown Number';
+      }
+      
       // Always update name — use backend resolved name, or fall back to passed name
-      setName(d.name || passedName || 'Unknown Number');
+      setName(resolvedName);
       setSpamScore(d.spamScore ?? 0);
       setConfidence(d.confidence ?? 0);
       setIsSpam(d.isLikelySpam ?? false);
@@ -71,6 +78,10 @@ export default function NumberDetailScreen() {
       await storageService.addRecentLookup(d);
     } catch (err) {
       console.warn('Lookup failed:', err);
+      // On error, keep the passed name
+      if (!name || name === 'Unknown Number') {
+        setName(passedName || 'Unknown Number');
+      }
     } finally {
       setLoading(false);
     }
@@ -197,7 +208,7 @@ export default function NumberDetailScreen() {
     }
   };
 
-  const displayName = name || 'Unknown Number';
+  const displayName = loading ? (passedName || phone) : (name || 'Unknown Number');
   const avatarColor = isSpam ? '#F44336' : getAvatarColor(name || null);
 
   return (
@@ -219,7 +230,7 @@ export default function NumberDetailScreen() {
         {loading && (
           <View style={st.loadingRow}>
             <ActivityIndicator size="small" color="#2196F3" />
-            <Text style={st.loadingT}>Looking up...</Text>
+            <Text style={st.loadingT}>Identifying number...</Text>
           </View>
         )}
 

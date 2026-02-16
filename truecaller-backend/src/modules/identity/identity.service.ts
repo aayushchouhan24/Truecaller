@@ -890,7 +890,7 @@ export class IdentityService {
    * common name. This is the core logic for "if ANY user has saved this
    * number with a name, use that name".
    */
-  private async getBestContactName(
+  async getBestContactName(
     phoneNumbers: string[],
   ): Promise<{ name: string; confidence: number; count: number } | null> {
     const contacts = await this.prisma.userContact.groupBy({

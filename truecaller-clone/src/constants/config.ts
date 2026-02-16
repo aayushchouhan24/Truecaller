@@ -1,4 +1,4 @@
-export const API_BASE_URL = 'https://vq52dn7g-3000.inc1.devtunnels.ms/api';
+export const API_BASE_URL = 'http://truecaller-backend-alb-704066168.eu-central-1.elb.amazonaws.com/api';
 
 export const SPAM_THRESHOLD = 5;
 

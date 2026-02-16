@@ -223,8 +223,10 @@ export default function CallsScreen() {
         try {
           setDialLookingUp(true);
           const res = await numbersApi.lookup(dialNumber);
-          if (res.data?.name) {
-            setDialLookupName(res.data.name);
+          // Handle null, undefined, or "null" string
+          const name = res.data?.name;
+          if (name && name !== 'null' && name !== 'undefined') {
+            setDialLookupName(name);
           }
         } catch { } finally {
           setDialLookingUp(false);

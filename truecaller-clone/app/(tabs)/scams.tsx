@@ -70,7 +70,10 @@ export default function ScamsScreen() {
   const handleLookup = async (phoneNumber: string) => {
     try {
       const res = await numbersApi.lookup(phoneNumber);
-      router.push({ pathname: '/number-detail', params: { phone: phoneNumber, name: res.data.name || '' } });
+      // Handle null, undefined, or "null" string
+      const name = res.data.name;
+      const validName = (name && name !== 'null' && name !== 'undefined') ? name : '';
+      router.push({ pathname: '/number-detail', params: { phone: phoneNumber, name: validName } });
     } catch {
       router.push({ pathname: '/number-detail', params: { phone: phoneNumber, name: '' } });
     }

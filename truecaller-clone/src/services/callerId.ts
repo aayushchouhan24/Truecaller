@@ -86,19 +86,28 @@ class CallerIdService {
 
     try {
       const res = await numbersApi.lookup(phoneNumber);
+      const data = res.data;
+      
+      // Handle null, undefined, or "null" string properly
+      let name = data.name;
+      if (!name || name === 'null' || name === 'undefined') {
+        name = null;
+      }
+      
       const info: CallerInfo = {
         phoneNumber,
-        name: res.data.name,
-        isSpam: res.data.isLikelySpam,
-        spamScore: res.data.spamScore,
-        confidence: res.data.confidence,
-        source: res.data.name ? 'database' : 'unknown',
+        name: name,
+        isSpam: data.isLikelySpam ?? false,
+        spamScore: data.spamScore ?? 0,
+        confidence: data.confidence ?? 0,
+        source: name ? 'database' : 'unknown',
       };
 
       // Cache for this session
       this._cache.set(phoneNumber, info);
       return info;
-    } catch {
+    } catch (error) {
+      console.error('Failed to identify caller:', error);
       return {
         phoneNumber,
         name: null,
@@ -120,8 +129,11 @@ class CallerIdService {
       if (CallerIdModule?.startService) {
         // Pass API URL and stored JWT token to the native overlay service
         const token = await storageService.getToken();
-        // Strip /api suffix since the native code appends /numbers/lookup
         const baseUrl = API_BASE_URL; // already includes /api
+        // Refresh token before starting — native service stores it for HTTP calls
+        if (!token) {
+          console.warn('CallerID: No token available, service may not identify numbers');
+        }
         await CallerIdModule.startService(baseUrl, token || '');
       }
       this._enabled = true;
