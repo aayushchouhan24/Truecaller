@@ -6,7 +6,6 @@ on:
       - deploy
     paths:
       - 'truecaller-backend/**'
-      - '!truecaller-backend/**/*.md'
   workflow_dispatch:
     inputs:
       deploy_ollama:
