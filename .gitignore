@@ -1,0 +1,5 @@
+node_modules/
+.env
+.DS_Store
+truecaller-clone/google-services.json
+truecaller-backend/firebase-service-account.json
