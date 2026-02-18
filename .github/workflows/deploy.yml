@@ -169,6 +169,7 @@ jobs:
             OLLAMA_MODEL=llama3.2:1b
             OLLAMA_TIMEOUT=30000
             NODE_ENV=production
+            FIREBASE_SERVICE_ACCOUNT=${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
       - name: Deploy Backend to ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
