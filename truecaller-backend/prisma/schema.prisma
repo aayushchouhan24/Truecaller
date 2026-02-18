@@ -7,7 +7,37 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ── User ──────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// CANONICAL LOOKUP TABLE — number_profiles
+// This is the ONLY table read during lookup. Zero joins. Zero compute.
+// All intelligence is precomputed by background workers.
+// ══════════════════════════════════════════════════════════════════════
+
+model NumberProfile {
+  phoneNumber     String   @id @map("phone_number")    // PK = indexed, no UUID overhead
+  resolvedName    String?  @map("resolved_name")
+  description     String?
+  confidence      Float    @default(0)
+  spamScore       Int      @default(0) @map("spam_score")       // 0-100
+  spamCategory    String?  @map("spam_category")                // telemarketer|scam|robocall|legitimate
+  category        String?                                        // person|business|delivery|spam|unknown
+  tags            String[] @default([])
+  relationshipHint String? @map("relationship_hint")             // family|work|service|social
+  sourceCount     Int      @default(0) @map("source_count")
+  isVerified      Boolean  @default(false) @map("is_verified")
+  version         Int      @default(1)                           // optimistic concurrency
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([spamScore])
+  @@index([category])
+  @@index([updatedAt])
+  @@map("number_profiles")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// USER & AUTH
+// ══════════════════════════════════════════════════════════════════════
 
 enum VerificationLevel {
   NONE
@@ -33,7 +63,9 @@ model User {
   @@map("users")
 }
 
-// ── Number Identity ───────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// NUMBER IDENTITY — source-of-truth for AI pipeline (NOT used in lookup)
+// ══════════════════════════════════════════════════════════════════════
 
 model NumberIdentity {
   id                String    @id @default(uuid())
@@ -58,7 +90,9 @@ model NumberIdentity {
   @@map("number_identities")
 }
 
-// ── Name Contributions ────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// NAME CONTRIBUTIONS — crowdsourced name data
+// ══════════════════════════════════════════════════════════════════════
 
 enum SourceType {
   CONTACT_UPLOAD
@@ -80,6 +114,8 @@ model NameContribution {
   identity    NumberIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
   contributor User?          @relation(fields: [contributorId], references: [id], onDelete: SetNull)
 
+  // Composite indexes for heavy write-path deduplication
+  @@index([identityId, contributorId, cleanedName], name: "idx_contrib_dedup")
   @@index([identityId])
   @@index([contributorId])
   @@index([cleanedName])
@@ -104,7 +140,9 @@ model NameCluster {
   @@map("name_clusters")
 }
 
-// ── Spam ───────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// SPAM
+// ══════════════════════════════════════════════════════════════════════
 
 model SpamReport {
   id          String   @id @default(uuid())
@@ -115,6 +153,8 @@ model SpamReport {
 
   reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
 
+  // Composite index for per-user dedup + phone lookup
+  @@index([reporterId, phoneNumber], name: "idx_spam_reporter_phone")
   @@index([phoneNumber])
   @@map("spam_reports")
 }
@@ -127,7 +167,9 @@ model SpamScore {
   @@map("spam_scores")
 }
 
-// ── User Contacts (for syncing & contributing names) ──────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// USER CONTACTS
+// ══════════════════════════════════════════════════════════════════════
 
 model UserContact {
   id          String   @id @default(uuid())
@@ -141,6 +183,7 @@ model UserContact {
 
   @@unique([userId, phoneNumber])
   @@index([phoneNumber])
+  @@index([phoneNumber, name], name: "idx_contact_phone_name")
   @@map("user_contacts")
 }
 

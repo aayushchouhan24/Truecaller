@@ -1,4 +1,8 @@
-export const API_BASE_URL = 'http://truecaller-backend-alb-704066168.eu-central-1.elb.amazonaws.com/api';
+// In dev mode the root dev.ps1 sets EXPO_PUBLIC_API_BASE_URL to the devtunnel URL.
+// In production builds the env var is absent so the prod ALB URL is used.
+export const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_BASE_URL ||
+  'http://truecaller-backend-alb-704066168.eu-central-1.elb.amazonaws.com/api';
 
 export const SPAM_THRESHOLD = 5;
 

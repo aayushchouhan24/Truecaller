@@ -64,10 +64,15 @@ export class RedisService implements OnModuleDestroy {
   async invalidatePattern(pattern: string): Promise<void> {
     if (!this.client || !this.connected) return;
     try {
-      const keys = await this.client.keys(pattern);
-      if (keys.length > 0) {
-        await this.client.del(...keys);
-      }
+      // Use SCAN instead of KEYS for production safety (non-blocking)
+      let cursor = '0';
+      do {
+        const [nextCursor, keys] = await this.client.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = nextCursor;
+        if (keys.length > 0) {
+          await this.client.del(...keys);
+        }
+      } while (cursor !== '0');
     } catch { /* ignore */ }
   }
 

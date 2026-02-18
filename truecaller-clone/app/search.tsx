@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
     View, Text, TextInput, FlatList, StyleSheet, TouchableOpacity,
     StatusBar, ActivityIndicator, Keyboard, Alert,
@@ -38,9 +38,22 @@ function isPhoneNumber(q: string): boolean {
 export default function SearchScreen() {
     const params = useLocalSearchParams<{ q?: string }>();
     const [query, setQuery] = useState(params.q || '');
+    const [debouncedQuery, setDebouncedQuery] = useState(params.q || '');
     const [contacts, setContacts] = useState<UserContact[]>([]);
     const [searchHistory, setSearchHistory] = useState<{ query: string; phoneNumber?: string; resultName?: string }[]>([]);
     const [lookingUp, setLookingUp] = useState(false);
+    const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Debounce the query — 300 ms delay before filtering kicks in
+    useEffect(() => {
+        if (debounceTimer.current) clearTimeout(debounceTimer.current);
+        debounceTimer.current = setTimeout(() => {
+            setDebouncedQuery(query);
+        }, 300);
+        return () => {
+            if (debounceTimer.current) clearTimeout(debounceTimer.current);
+        };
+    }, [query]);
 
     // Handle incoming q param from dialpad
     useEffect(() => {
@@ -85,11 +98,11 @@ export default function SearchScreen() {
         }, [])
     );
 
-    // Filter contacts by query
-    const filtered = query.trim()
+    // Filter contacts by debounced query (300ms delay)
+    const filtered = debouncedQuery.trim()
         ? contacts.filter(c =>
-            c.name.toLowerCase().includes(query.toLowerCase()) ||
-            c.phoneNumber.includes(query)
+            c.name.toLowerCase().includes(debouncedQuery.toLowerCase()) ||
+            c.phoneNumber.includes(debouncedQuery)
         )
         : [];
 
@@ -223,7 +236,7 @@ export default function SearchScreen() {
             ) : (
                 <FlatList
                     data={searchHistory}
-                    keyExtractor={i => i.id}
+                    keyExtractor={(i, idx) => `${i.query}-${idx}`}
                     renderItem={({ item }) => (
                         <TouchableOpacity style={st.row} onPress={() => handleHistoryPress(item)} activeOpacity={0.7}>
                             <View style={st.historyIcon}>

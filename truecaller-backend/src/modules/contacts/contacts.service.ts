@@ -1,10 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
-import { RedisService } from '../../redis/redis.service';
 import { IdentityService } from '../identity/identity.service';
+import { EventBusService } from '../../events/event-bus.service';
 import { SyncContactsDto } from './dto/sync-contacts.dto';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 
 // ── Relationship keywords → tags mind-map ──────────────────────────────
 // Maps contact name keywords to relationship tags so we build a "mind map"
@@ -92,9 +90,8 @@ export class ContactsService {
 
   constructor(
     private prisma: PrismaService,
-    private redisService: RedisService,
     private identityService: IdentityService,
-    @InjectQueue('numbers') private readonly numbersQueue: Queue,
+    private eventBus: EventBusService,
   ) {}
 
   async syncContacts(userId: string, dto: SyncContactsDto, deviceFingerprint?: string) {
@@ -153,7 +150,7 @@ export class ContactsService {
     const allPhones = normalized.map((c) => c.phoneNumber);
 
     try {
-      // Step 1: Add name contributions in bulk
+      // Add name contributions in bulk
       const result = await this.identityService.addNameContributionsBatch(
         normalized.map((c) => ({ phoneNumber: c.phoneNumber, name: c.name })),
         userId,
@@ -165,47 +162,23 @@ export class ContactsService {
         `User ${userId}: batch contributions done — ${result.created} created, ` +
         `${result.skipped} skipped, ${result.junk} junk`,
       );
-
-      // Step 2: Quick resolve for unresolved names (no AI, just frequency-based)
-      const resolved = await this.identityService.bulkResolveNamesFromContacts(allPhones);
-      if (resolved > 0) {
-        this.logger.log(`User ${userId}: resolved ${resolved} additional names from contacts`);
-      }
     } catch (error) {
       this.logger.error(`User ${userId}: batch contribution failed`, error);
     }
 
-    // ── Step 3: Queue BACKGROUND AI resolution for all synced numbers ──
-    // This runs the full intelligence pipeline (tokenize → classify → cluster → AI resolve)
-    // asynchronously so it doesn't block the sync response.
+    // ── Emit CONTACT_SYNC event (worker rebuilds profiles asynchronously) ──
     const uniquePhones = [...new Set(allPhones)];
     try {
-      await this.numbersQueue.add(
-        'batch-resolve-identities',
-        { phoneNumbers: uniquePhones, userId },
-        {
-          delay: 2000, // slight delay so DB writes finish
-          attempts: 2,
-          backoff: { type: 'exponential', delay: 5000 },
-          removeOnComplete: true,
-          removeOnFail: 50,
-        },
-      );
+      await this.eventBus.emitContactSync({
+        userId,
+        phoneNumbers: uniquePhones,
+        timestamp: Date.now(),
+      });
       this.logger.log(
-        `User ${userId}: queued background AI resolution for ${uniquePhones.length} numbers`,
+        `User ${userId}: emitted contact-sync event for ${uniquePhones.length} numbers`,
       );
     } catch (err) {
-      this.logger.warn(`Failed to queue batch resolution: ${err}`);
-    }
-
-    // ── Step 4: Invalidate lookup caches for all synced numbers ──
-    // so next lookup picks up freshly computed names
-    const CACHE_BATCH = 100;
-    for (let i = 0; i < uniquePhones.length; i += CACHE_BATCH) {
-      const batch = uniquePhones.slice(i, i + CACHE_BATCH);
-      await Promise.all(
-        batch.map((phone) => this.redisService.del(`lookup:${phone}`)),
-      );
+      this.logger.warn(`Failed to emit contact sync event: ${err}`);
     }
 
     this.logger.log(`User ${userId} synced ${synced} contacts, contributed ${contributed} names`);

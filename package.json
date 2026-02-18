@@ -1,0 +1,8 @@
+{
+  "name": "truecaller",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1"
+  }
+}

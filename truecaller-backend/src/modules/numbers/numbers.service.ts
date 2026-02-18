@@ -1,17 +1,29 @@
+/**
+ * Numbers Service — ZERO-COMPUTE lookup path.
+ *
+ * Lookup flow:
+ *   Client → L1 (LRU) → L2 (Redis) → L3 (PostgreSQL indexed read) → return
+ *
+ * Rules:
+ *   ✗ No AI calls
+ *   ✗ No joins
+ *   ✗ No loops
+ *   ✗ No extra queries
+ *   ✗ No runtime scoring
+ *
+ * All intelligence is precomputed by the worker and stored in number_profiles.
+ * The only per-user query is hasUserReportedSpam (1 indexed read).
+ */
+
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
-import { RedisService } from '../../redis/redis.service';
+import { ProfileCacheService, type CachedProfile } from '../../cache/profile-cache.service';
+import { EventBusService } from '../../events/event-bus.service';
 import { IdentityService } from '../identity/identity.service';
 import { SpamService } from '../spam/spam.service';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 import { LookupDto } from './dto/lookup.dto';
 import { ReportSpamDto } from './dto/report-spam.dto';
 import { AddNameDto } from './dto/add-name.dto';
-
-const CACHE_TTL = 86400; // 24 hours — names are resolved on sync, not on lookup
-const NULL_NAME_CACHE_TTL = 300; // 5 minutes — re-check soon if name wasn't found
-const CACHE_PREFIX = 'lookup:';
 
 export interface LookupResult {
   phoneNumber: string;
@@ -21,10 +33,10 @@ export interface LookupResult {
   isVerified: boolean;
   spamScore: number;
   isLikelySpam: boolean;
-  spamCategory?: string;
-  numberCategory?: string;
+  spamCategory: string | null;
+  category: string | null;
   tags: string[];
-  probableRole: string | null;
+  relationshipHint: string | null;
   description: string | null;
   hasUserReportedSpam: boolean;
 }
@@ -35,148 +47,97 @@ export class NumbersService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly redisService: RedisService,
+    private readonly cache: ProfileCacheService,
+    private readonly eventBus: EventBusService,
     private readonly identityService: IdentityService,
     private readonly spamService: SpamService,
-    @InjectQueue('numbers') private readonly numbersQueue: Queue,
   ) {}
 
+  /**
+   * LOOKUP — the hot path.
+   *
+   * Single read from cache/DB → shape → return.
+   * No compute. No AI. No joins. Target: p50 < 20 ms.
+   */
   async lookup(lookupDto: LookupDto, userId?: string): Promise<LookupResult> {
     const phoneNumber = this.identityService.normalizePhone(lookupDto.phoneNumber);
-    const cacheKey = `${CACHE_PREFIX}${phoneNumber}`;
 
-    // Check Redis cache first (fast path)
-    const cached = await this.redisService.get(cacheKey);
-    if (cached) {
-      this.logger.debug(`Cache hit for ${phoneNumber}`);
-      const cachedResult: LookupResult = JSON.parse(cached);
-      // Always compute hasUserReportedSpam per-user (not cached)
-      if (userId) {
-        const userReport = await this.prisma.spamReport.findFirst({
-          where: { reporterId: userId, phoneNumber },
-        });
-        cachedResult.hasUserReportedSpam = !!userReport;
-      } else {
-        cachedResult.hasUserReportedSpam = false;
-      }
-      return cachedResult;
-    }
+    // ── Single cache read (L1 → L2 → L3) ─────────────────────────
+    const profile: CachedProfile | null = await this.cache.get(phoneNumber);
 
-    // ── Read pre-computed data from DB (no AI — names resolved on contact sync) ──
-    const identity = await this.identityService.findOrCreateIdentity(phoneNumber);
-    const isVerified = !!identity.verifiedName;
-    let resolvedName = isVerified
-      ? identity.verifiedName
-      : (identity.resolvedName || null);
-
-    // ── Synchronous fallback: if no resolvedName, check UserContacts & contributions NOW ──
-    // This prevents returning null for numbers that exist in the system but haven't been resolved yet
-    if (!resolvedName) {
-      const normalizedPhone = this.identityService.normalizePhone(phoneNumber);
-      const phonesToTry = [...new Set([normalizedPhone, phoneNumber])];
-
-      // 1. Check UserContact table — if ANY user saved this number with a name, use it
-      const contactName = await this.identityService.getBestContactName(phonesToTry);
-      if (contactName) {
-        resolvedName = contactName.name;
-        // Persist so future lookups don't need this fallback
-        await this.prisma.numberIdentity.update({
-          where: { id: identity.id },
-          data: {
-            resolvedName: contactName.name,
-            confidence: contactName.confidence,
-            lastResolvedAt: new Date(),
-          },
-        });
-        this.logger.log(`Sync-resolved name for ${phoneNumber}: "${contactName.name}"`);
-      } else {
-        // 2. Check NameContribution table — pick the top-weighted contribution
-        const topContrib = await this.prisma.nameContribution.findFirst({
-          where: { identity: { phoneNumber: { in: phonesToTry } } },
-          orderBy: { contributorTrustWeight: 'desc' },
-        });
-        if (topContrib?.cleanedName) {
-          resolvedName = topContrib.cleanedName;
-          // Persist
-          await this.prisma.numberIdentity.update({
-            where: { id: identity.id },
-            data: {
-              resolvedName: topContrib.cleanedName,
-              confidence: Math.round(topContrib.contributorTrustWeight * 30),
-              lastResolvedAt: new Date(),
-            },
-          });
-          this.logger.log(`Sync-resolved name from contributions for ${phoneNumber}: "${topContrib.cleanedName}"`);
-        }
-      }
-    }
-
-    // Use pre-computed tags/role/description from the NumberIdentity row
-    const tags: string[] = (identity as any).tags ?? [];
-    const probableRole: string | null = (identity as any).probableRole ?? null;
-    const description: string | null = (identity as any).description ?? null;
-
-    // Spam: only read from DB, no AI calls during lookup
-    const spamScore = await this.spamService.getSpamScore(phoneNumber);
-    const uniqueReporters = await this.spamService.getUniqueReporterCount(phoneNumber);
-    const isLikelySpam = uniqueReporters >= 3 && spamScore > 5;
-
-    // Check if the requesting user has reported this number as spam
+    // ── Per-user spam flag (1 indexed read using composite index) ──
     let hasUserReportedSpam = false;
     if (userId) {
-      const userReport = await this.prisma.spamReport.findFirst({
+      const report = await this.prisma.spamReport.findFirst({
         where: { reporterId: userId, phoneNumber },
+        select: { id: true },
       });
-      hasUserReportedSpam = !!userReport;
+      hasUserReportedSpam = !!report;
     }
 
-    const result: LookupResult = {
+    // ── Shape response ─────────────────────────────────────────────
+    if (!profile) {
+      return {
+        phoneNumber,
+        name: null,
+        confidence: 0,
+        sourceCount: 0,
+        isVerified: false,
+        spamScore: 0,
+        isLikelySpam: false,
+        spamCategory: null,
+        category: null,
+        tags: [],
+        relationshipHint: null,
+        description: null,
+        hasUserReportedSpam,
+      };
+    }
+
+    return {
       phoneNumber,
-      name: resolvedName,
-      confidence: isVerified ? 100 : Math.round((identity.confidence ?? 0)),
-      sourceCount: identity.sourceCount,
-      isVerified,
-      spamScore,
-      isLikelySpam,
-      tags,
-      probableRole,
-      description,
+      name: profile.resolvedName,
+      confidence: profile.confidence,
+      sourceCount: profile.sourceCount,
+      isVerified: profile.isVerified,
+      spamScore: profile.spamScore,
+      isLikelySpam: profile.spamScore > 50,
+      spamCategory: profile.spamCategory,
+      category: profile.category,
+      tags: profile.tags,
+      relationshipHint: profile.relationshipHint,
+      description: profile.description,
       hasUserReportedSpam,
     };
-
-    // Cache: use full TTL if name was found, short TTL if null (so we re-check soon)
-    const cacheTtl = resolvedName ? CACHE_TTL : NULL_NAME_CACHE_TTL;
-    await this.redisService.set(cacheKey, JSON.stringify(result), cacheTtl);
-
-    // If identity has no resolvedName yet but has contributions, queue a background resolve
-    if (!resolvedName && identity.sourceCount > 0) {
-      this.numbersQueue.add('recalculate-identity', {
-        phoneNumber,
-        contributionId: 'lookup-trigger',
-      }).catch(() => {});
-    }
-
-    return result;
   }
 
+  /**
+   * Report a phone number as spam.
+   * Writes to DB immediately, then emits event for worker to recompute score.
+   */
   async reportSpam(userId: string, reportSpamDto: ReportSpamDto) {
     const { phoneNumber, reason } = reportSpamDto;
     const normalized = this.identityService.normalizePhone(phoneNumber);
 
     const report = await this.spamService.reportSpam(userId, normalized, reason);
 
-    // Invalidate cache
-    await this.redisService.del(`${CACHE_PREFIX}${normalized}`);
-
-    // Trigger background job
-    await this.numbersQueue.add('update-confidence-after-spam', {
+    // Emit event — worker will recompute spam score + update number_profiles
+    await this.eventBus.emitSpamReport({
+      userId,
       phoneNumber: normalized,
+      action: 'REPORTED',
+      reason,
       reportId: report.id,
+      timestamp: Date.now(),
     });
 
     return { message: 'Spam reported successfully', reportId: report.id };
   }
 
+  /**
+   * Add a name contribution for a phone number.
+   * Writes to DB immediately, then emits event for worker to re-resolve.
+   */
   async addName(userId: string, addNameDto: AddNameDto) {
     const { phoneNumber, name, sourceType, deviceFingerprint } = addNameDto;
     const normalized = this.identityService.normalizePhone(phoneNumber);
@@ -193,29 +154,33 @@ export class NumbersService {
       return { message: 'Name was filtered as junk', contributed: false };
     }
 
-    // Invalidate cache
-    await this.redisService.del(`${CACHE_PREFIX}${normalized}`);
-
-    // Trigger background recalculation
-    await this.numbersQueue.add('recalculate-identity', {
+    // Emit event — worker will re-resolve identity + update number_profiles
+    await this.eventBus.emitNameContribution({
+      userId,
       phoneNumber: normalized,
       contributionId: contribution.id,
+      name,
+      sourceType: sourceType || 'MANUAL',
+      timestamp: Date.now(),
     });
 
     return { message: 'Name contribution added', contributionId: contribution.id, contributed: true };
   }
 
-  async backfillUnresolvedNames(): Promise<number> {
-    return this.identityService.resolveAllUnresolvedNames();
-  }
-
+  /**
+   * Remove a user's spam report.
+   */
   async removeSpamReport(userId: string, phoneNumber: string) {
     const normalized = this.identityService.normalizePhone(phoneNumber);
     const result = await this.spamService.removeSpamReport(userId, normalized);
 
     if (result.removed) {
-      // Invalidate cache
-      await this.redisService.del(`${CACHE_PREFIX}${normalized}`);
+      await this.eventBus.emitSpamReport({
+        userId,
+        phoneNumber: normalized,
+        action: 'REMOVED',
+        timestamp: Date.now(),
+      });
     }
 
     return result;

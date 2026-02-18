@@ -12,6 +12,8 @@ import ollamaConfig from './config/ollama.config';
 
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
+import { CacheModule } from './cache/cache.module';
+import { EventBusModule } from './events/event-bus.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { IdentityModule } from './modules/identity/identity.module';
@@ -73,9 +75,11 @@ import { HealthController } from './health.controller';
       },
     }),
 
-    // Core modules
+    // Core infrastructure (global)
     DatabaseModule,
     RedisModule,
+    CacheModule,      // L1+L2+L3 profile cache
+    EventBusModule,   // BullMQ event bus for domain events
     FirebaseModule,
     OllamaModule,
 
@@ -87,6 +91,8 @@ import { HealthController } from './health.controller';
     SpamModule,
     ContactsModule,
     FavoritesModule,
+
+    // Worker (processes profile-events queue)
     JobsModule,
   ],
   controllers: [HealthController],

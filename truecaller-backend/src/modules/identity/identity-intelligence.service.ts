@@ -480,13 +480,14 @@ export class IdentityIntelligenceService implements OnModuleInit {
   }
 
   /**
-   * Persist the resolved identity profile back to the NumberIdentity row.
+   * Persist the resolved identity profile to both NumberIdentity and NumberProfile.
    */
   private async persistProfile(
     phoneNumber: string,
     profile: IdentityProfile,
   ): Promise<void> {
     try {
+      // Write to legacy NumberIdentity table
       await this.prisma.numberIdentity.updateMany({
         where: { phoneNumber },
         data: {
@@ -497,6 +498,33 @@ export class IdentityIntelligenceService implements OnModuleInit {
           description: profile.description,
           reasoning: profile.reasoning,
           lastResolvedAt: new Date(),
+        },
+      });
+
+      // Write to canonical NumberProfile table (the lookup source)
+      const sourceCount = await this.prisma.nameContribution.count({
+        where: { identity: { phoneNumber } },
+      });
+
+      await this.prisma.numberProfile.upsert({
+        where: { phoneNumber },
+        update: {
+          resolvedName: profile.name !== 'Unknown' ? profile.name : null,
+          description: profile.description,
+          confidence: profile.confidence,
+          tags: profile.tags,
+          relationshipHint: profile.probable_role,
+          sourceCount,
+          version: { increment: 1 },
+        },
+        create: {
+          phoneNumber,
+          resolvedName: profile.name !== 'Unknown' ? profile.name : null,
+          description: profile.description,
+          confidence: profile.confidence,
+          tags: profile.tags,
+          relationshipHint: profile.probable_role,
+          sourceCount,
         },
       });
     } catch (err) {

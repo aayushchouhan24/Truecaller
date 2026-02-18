@@ -60,19 +60,10 @@ export const authApi = {
 
 export const numbersApi = {
   lookup: async (phoneNumber: string): Promise<ApiResponse<LookupResult>> => {
+    // Single request — no retry delay. The backend returns precomputed data.
+    // If name is null, it means the number hasn't been resolved yet.
+    // The worker will resolve it asynchronously.
     const res = await api.post('/numbers/lookup', { phoneNumber }) as ApiResponse<LookupResult>;
-
-    // If backend returned null name, retry once after a short delay
-    // (the first call may trigger background name resolution on the server)
-    if (res.data && (!res.data.name || res.data.name === 'null')) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      const retry = await api.post('/numbers/lookup', { phoneNumber }) as ApiResponse<LookupResult>;
-      // Only use retry result if it actually has a name
-      if (retry.data?.name && retry.data.name !== 'null') {
-        return retry;
-      }
-    }
-
     return res;
   },
 

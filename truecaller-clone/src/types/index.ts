@@ -18,10 +18,10 @@ export interface LookupResult {
   isVerified: boolean;
   spamScore: number;
   isLikelySpam: boolean;
-  spamCategory?: string;
-  numberCategory?: string;
+  spamCategory: string | null;
+  category: string | null;
   tags: string[];
-  probableRole: string | null;
+  relationshipHint: string | null;
   description: string | null;
   hasUserReportedSpam: boolean;
 }

@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, Delete } from '@nestjs/common';
+import { Controller, Post, Body, Get, Delete, HttpCode, HttpStatus } from '@nestjs/common';
 import { NumbersService } from './numbers.service';
 import { LookupDto } from './dto/lookup.dto';
 import { ReportSpamDto } from './dto/report-spam.dto';
@@ -41,13 +41,16 @@ export class NumbersController {
     return this.numbersService.addName(userId, addNameDto);
   }
 
+  /**
+   * @deprecated Backfill is now handled by the event-driven worker pipeline.
+   * Kept as a manual trigger for batch-rebuild.
+   */
   @Post('backfill-names')
+  @HttpCode(HttpStatus.ACCEPTED)
   async backfillNames() {
-    const resolved = await this.numbersService.backfillUnresolvedNames();
     return {
       success: true,
-      message: `Resolved ${resolved} names from user contacts`,
-      resolved,
+      message: 'Backfill is now processed asynchronously via the worker pipeline. Use the batch-rebuild event instead.',
     };
   }
 }

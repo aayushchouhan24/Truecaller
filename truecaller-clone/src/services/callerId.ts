@@ -1,8 +1,14 @@
 /**
  * Caller ID Service — identifies incoming callers on Android.
- * Uses phone state listener + overlay to show caller info.
- * In a dev build with SYSTEM_ALERT_WINDOW permission, this shows
- * a popup over the incoming call screen.
+ *
+ * Optimistic rendering pipeline:
+ *   1. Check in-memory cache → return immediately
+ *   2. Check persistent local cache (AsyncStorage) → return immediately
+ *   3. Fire API request silently in background
+ *   4. Update caches if API returned new/changed data
+ *
+ * This ensures the caller ID popup shows INSTANTLY for any
+ * previously seen number, with zero network latency.
  */
 import { Platform, PermissionsAndroid, AppState, NativeModules, Linking } from 'react-native';
 import { numbersApi } from './api';
@@ -17,7 +23,7 @@ export interface CallerInfo {
   isSpam: boolean;
   spamScore: number;
   confidence: number;
-  source: 'contacts' | 'database' | 'community' | 'unknown';
+  source: 'contacts' | 'database' | 'community' | 'cache' | 'unknown';
 }
 
 class CallerIdService {
@@ -48,9 +54,7 @@ class CallerIdService {
   async requestOverlayPermission(): Promise<boolean> {
     if (Platform.OS !== 'android') return false;
     try {
-      // SYSTEM_ALERT_WINDOW (draw over other apps) requires special intent
       await Linking.openSettings();
-      // User manually enables it — we check on return
       return new Promise<boolean>((resolve) => {
         const sub = AppState.addEventListener('change', (state) => {
           if (state === 'active') {
@@ -76,35 +80,70 @@ class CallerIdService {
     }
   }
 
-  /* ── caller identification ──────────────────────── */
+  /* ── caller identification (optimistic pipeline) ── */
 
   async identifyCaller(phoneNumber: string): Promise<CallerInfo> {
-    // Check cache first
-    if (this._cache.has(phoneNumber)) {
-      return this._cache.get(phoneNumber)!;
+    // ── 1. In-memory cache (instant) ──────────────────────────────
+    const memCached = this._cache.get(phoneNumber);
+    if (memCached) {
+      // Fire background refresh (non-blocking)
+      this.backgroundRefresh(phoneNumber);
+      return memCached;
     }
 
+    // ── 2. Persistent local cache (fast — ~5ms) ──────────────────
+    const localCached = await storageService.getCachedProfile(phoneNumber);
+    if (localCached) {
+      const info: CallerInfo = {
+        phoneNumber,
+        name: localCached.name ?? null,
+        isSpam: localCached.isLikelySpam ?? false,
+        spamScore: localCached.spamScore ?? 0,
+        confidence: localCached.confidence ?? 0,
+        source: 'cache',
+      };
+      this._cache.set(phoneNumber, info);
+      // Fire background refresh (non-blocking)
+      this.backgroundRefresh(phoneNumber);
+      return info;
+    }
+
+    // ── 3. Network fetch (blocking — first-time only) ─────────────
+    return this.fetchAndCache(phoneNumber);
+  }
+
+  /**
+   * Silently fetch from API and update caches if data changed.
+   */
+  private backgroundRefresh(phoneNumber: string): void {
+    this.fetchAndCache(phoneNumber).catch(() => {
+      // Ignore — we already have cached data
+    });
+  }
+
+  private async fetchAndCache(phoneNumber: string): Promise<CallerInfo> {
     try {
       const res = await numbersApi.lookup(phoneNumber);
       const data = res.data;
-      
-      // Handle null, undefined, or "null" string properly
+
       let name = data.name;
       if (!name || name === 'null' || name === 'undefined') {
         name = null;
       }
-      
+
       const info: CallerInfo = {
         phoneNumber,
-        name: name,
+        name,
         isSpam: data.isLikelySpam ?? false,
         spamScore: data.spamScore ?? 0,
         confidence: data.confidence ?? 0,
         source: name ? 'database' : 'unknown',
       };
 
-      // Cache for this session
+      // Update both caches
       this._cache.set(phoneNumber, info);
+      await storageService.setCachedProfile(phoneNumber, data);
+
       return info;
     } catch (error) {
       console.error('Failed to identify caller:', error);
@@ -127,10 +166,8 @@ class CallerIdService {
 
     try {
       if (CallerIdModule?.startService) {
-        // Pass API URL and stored JWT token to the native overlay service
         const token = await storageService.getToken();
-        const baseUrl = API_BASE_URL; // already includes /api
-        // Refresh token before starting — native service stores it for HTTP calls
+        const baseUrl = API_BASE_URL;
         if (!token) {
           console.warn('CallerID: No token available, service may not identify numbers');
         }
@@ -139,7 +176,6 @@ class CallerIdService {
       this._enabled = true;
       return true;
     } catch {
-      // Native module not available — will work via app foreground only
       this._enabled = true;
       return true;
     }

@@ -12,7 +12,16 @@
           "package_name": "com.truecallerclone.app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "699910785132-g9tuqtcvk137i39e611mvhoio5r10bld.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.truecallerclone.app",
+            "certificate_hash": "9cccddcbb51b9036e20992d1ea6e4c635b332a89"
+          }
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyCLQxL6Ht2HFdVqzR6aWTQWBMZJjK9kBI4"

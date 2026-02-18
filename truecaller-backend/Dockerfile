@@ -25,6 +25,7 @@ COPY --from=base /app/package.json ./
 COPY --from=base /app/node_modules ./node_modules
 COPY --from=base /app/dist ./dist
 COPY --from=base /app/prisma ./prisma
+COPY --from=base /app/firebase-service-account.json ./firebase-service-account.json
 
 ENV NODE_ENV=production
 

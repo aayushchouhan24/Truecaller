@@ -72,7 +72,7 @@ export default function NumberDetailScreen() {
       setConfidence(d.confidence ?? 0);
       setIsSpam(d.isLikelySpam ?? false);
       setTags(d.tags ?? []);
-      setProbableRole(d.probableRole ?? null);
+      setProbableRole(d.relationshipHint ?? null);
       setDescription(d.description ?? null);
       setHasUserReportedSpam(d.hasUserReportedSpam ?? false);
       await storageService.addRecentLookup(d);

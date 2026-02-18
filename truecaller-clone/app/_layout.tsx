@@ -61,6 +61,7 @@ export default function RootLayout() {
       } catch (e) {
         console.warn('Caller ID init failed:', e);
       }
+
     };
 
     initCallerId();

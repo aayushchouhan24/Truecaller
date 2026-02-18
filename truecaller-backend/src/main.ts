@@ -17,9 +17,10 @@ async function bootstrap() {
   app.use(helmet());
   app.use(compression());
 
-  // CORS
+  // CORS — restrict to known origins in production
+  const allowedOrigins = configService.get<string>('CORS_ORIGINS', '*');
   app.enableCors({
-    origin: '*',
+    origin: allowedOrigins === '*' ? true : allowedOrigins.split(',').map((o) => o.trim()),
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   });
